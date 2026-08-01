@@ -1,0 +1,21 @@
+name: test-and-build
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --all-extras
+      - run: uv run pytest
+      - run: uv run python setup.py py2app
+      - run: codesign --force --deep --sign - dist/RelayNote.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RelayNote-${{ matrix.runner }}
+          path: dist/RelayNote.app

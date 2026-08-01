@@ -1,0 +1,40 @@
+[project]
+name = "relaynote"
+version = "0.1.0"
+description = "A local-first macOS menu bar todo orchestrator for Codex"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+dependencies = [
+    "openai>=2.52.0",
+    "py2app>=0.28.8; sys_platform == 'darwin'",
+    "pyobjc-framework-cocoa>=10.3; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+relaynote = "relaynote.main:main"
+relaynote-ask = "relaynote.ask_mcp:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1.1", "pytest-asyncio>=1.4.0"]
+dependencies = [
+    "openai>=2.52.0",
+    "py2app>=0.28.8 ; sys_platform == 'darwin'",
+    "pyobjc-framework-cocoa>=10.3 ; sys_platform == 'darwin'",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
