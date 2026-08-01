@@ -549,7 +549,7 @@ wheels = [
 
 [[package]]
 name = "py2app"
-version = "0.28.10"
+version = "0.28.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "altgraph" },
@@ -557,9 +557,9 @@ dependencies = [
     { name = "modulegraph" },
     { name = "packaging" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/93/82/79a2aaaf86c44c6018edce1a028cf821acec4c3ca63e2b5781f16822c99f/py2app-0.28.10.tar.gz", hash = "sha256:fd38f4a0083d4d1e91ea336eaef678b99d9e1b95ac6302315cad22fa5e859cb1", size = 1143601, upload-time = "2026-02-13T20:50:02.289Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/d8/a81d296560df958e496a03e4373615db5157dacb388945110404cbd0879b/py2app-0.28.8.tar.gz", hash = "sha256:cab7aec752a8b83e7c6cef7c15271dc720155275e44cbf610e3162e0807313ec", size = 1173004, upload-time = "2024-05-25T16:39:52.409Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/be/d8/a04a88b182613370a262f674929f0e284ea04e1803f2d38fc5639fbec2d7/py2app-0.28.10-py3-none-any.whl", hash = "sha256:bdb0cd2cbfa5160b5b11b8d612f6eb92d484a0282801e85b159f1930cd834714", size = 837349, upload-time = "2026-02-13T20:49:59.98Z" },
+    { url = "https://files.pythonhosted.org/packages/83/12/a0932851fe222d9cf9193e192f01d7f62c89d9690b17d731ef5385df4360/py2app-0.28.8-py2.py3-none-any.whl", hash = "sha256:38b80f0c91f8d2dddb6396e6bbff8a84875f073c510f4f1a307e8ae44c7d73d8", size = 835661, upload-time = "2024-05-25T16:31:50.8Z" },
 ]
 
 [[package]]
@@ -820,7 +820,7 @@ dev = [
 requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=2.0.0" },
     { name = "openai", specifier = ">=2.52.0" },
-    { name = "py2app", marker = "sys_platform == 'darwin'", specifier = ">=0.28.8" },
+    { name = "py2app", marker = "sys_platform == 'darwin'", specifier = "==0.28.8" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'", specifier = ">=10.3" },
     { name = "websockets", specifier = ">=15.0.1" },
 ]

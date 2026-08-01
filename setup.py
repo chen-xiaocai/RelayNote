@@ -14,4 +14,4 @@ OPTIONS = {
     "extra_scripts": ["src/relaynote/ask_mcp.py"],
 }
 
-setup(app=APP, name="RelayNote", options={"py2app": OPTIONS}, setup_requires=["py2app"])
+setup(app=APP, name="RelayNote", options={"py2app": OPTIONS})
