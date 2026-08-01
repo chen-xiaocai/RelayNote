@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
+from .ipc import safe_unix_socket_path
+
 
 @dataclass(frozen=True, slots=True)
 class Option:
@@ -129,7 +131,7 @@ class AskBrokerServer:
     """Authenticated local bridge shared by every task-specific Ask MCP process."""
 
     def __init__(self, path: Path, token: str, broker: QuestionBroker) -> None:
-        self.path = path
+        self.path = safe_unix_socket_path(path, "ask")
         self.token = token
         self.broker = broker
         self.server: asyncio.AbstractServer | None = None

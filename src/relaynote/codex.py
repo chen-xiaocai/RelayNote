@@ -14,6 +14,7 @@ from typing import Any
 import websockets
 
 from .config import Settings
+from .ipc import safe_unix_socket_path
 from .jsonrpc import JsonRpcConnection, JsonRpcWebSocket
 from .workspace import validate_cwd
 
@@ -289,7 +290,7 @@ async def spawn_app_server(
 
     socket_path: Path | None
     if prefer_unix:
-        socket_path = cwd / "codex.sock"
+        socket_path = safe_unix_socket_path(cwd / "codex.sock", f"codex-{run_id}")
         try:
             socket_path.unlink()
         except FileNotFoundError:

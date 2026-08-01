@@ -6,6 +6,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .ipc import safe_unix_socket_path
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -46,7 +48,7 @@ class Settings:
 
     @property
     def ask_socket(self) -> Path:
-        return self.runtime_dir / "ask.sock"
+        return safe_unix_socket_path(self.runtime_dir / "ask.sock", "ask")
 
     def network_env(self) -> dict[str, str]:
         return {
