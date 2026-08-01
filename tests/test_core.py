@@ -106,6 +106,15 @@ def test_full_jsonl_roundtrip_and_secret_rejection(tmp_path: Path) -> None:
         logger.write("bad", {"Authorization": "secret"})
 
 
+def test_multi_megabyte_jsonl_value_is_not_shortened(tmp_path: Path) -> None:
+    logger = JsonlLogger(tmp_path / "large.jsonl")
+    value = "完整内容" * 600_000
+    logger.write("large_fixture", {"value": value, "length": len(value)})
+    record = json.loads(logger.path.read_text(encoding="utf-8"))
+    assert record["raw"]["value"] == value
+    assert record["raw"]["length"] == len(value)
+
+
 def test_workspace_rejects_broad_paths() -> None:
     with pytest.raises(ValueError):
         validate_cwd(Path("/"))

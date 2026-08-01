@@ -2,20 +2,29 @@ name: test-and-build
 on: [push, pull_request]
 jobs:
   test:
+    timeout-minutes: 60
     strategy:
       matrix:
-        runner: [macos-15, macos-15-intel]
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - run: uv sync --frozen --all-extras
+      - run: uv sync --frozen --all-groups
+      - run: uv run ruff check src
       - run: uv run pytest
+      - run: uv run python -m compileall -q src tests
       - run: uv run python setup.py py2app
       - run: codesign --force --deep --sign - dist/RelayNote.app
+      - run: ditto -c -k --sequesterRsrc --keepParent dist/RelayNote.app RelayNote-${{ matrix.arch }}.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: RelayNote-${{ matrix.runner }}
-          path: dist/RelayNote.app
+          name: RelayNote-${{ matrix.arch }}
+          path: RelayNote-${{ matrix.arch }}.zip
+          if-no-files-found: error

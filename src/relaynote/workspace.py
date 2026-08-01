@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
-
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -14,6 +14,7 @@ class Workspace:
     path: Path
     branch: str | None
     worktree: bool
+    project_root: Path | None = None
 
 
 async def _git(cwd: Path, *args: str) -> str:
@@ -37,22 +38,33 @@ async def prepare_workspace(todo_id: str, managed_root: Path, project: Path | No
     if not SAFE_ID.fullmatch(todo_id):
         raise ValueError("unsafe todo id")
     managed_root.mkdir(parents=True, exist_ok=True)
+    target = managed_root / todo_id
+    if target.exists():
+        return Workspace(validate_cwd(target), None, (target / ".git").is_file(), project)
     if project is None:
-        target = managed_root / todo_id
         target.mkdir(exist_ok=False)
         await _git(target, "init")
-        return Workspace(validate_cwd(target), None, False)
+        return Workspace(validate_cwd(target), None, False, None)
     project = validate_cwd(project)
     try:
         root = Path(await _git(project, "rev-parse", "--show-toplevel")).resolve()
     except RuntimeError:
-        return Workspace(project, None, False)
+        target.mkdir(exist_ok=False)
+        for source in project.iterdir():
+            destination = target / source.name
+            if source.is_dir():
+                shutil.copytree(source, destination, symlinks=True)
+            else:
+                shutil.copy2(source, destination, follow_symlinks=False)
+        await _git(target, "init")
+        return Workspace(validate_cwd(target), None, False, project)
     dirty = bool(await _git(root, "status", "--porcelain"))
     if dirty and dirty_policy == "suspend":
         raise RuntimeError("dirty_repository_requires_user_choice")
     if dirty_policy == "original":
-        return Workspace(root, None, False)
+        return Workspace(root, None, False, root)
+    if dirty_policy not in {"suspend", "head"}:
+        raise ValueError("dirty_policy must be suspend, head, or original")
     branch = f"relaynote/{todo_id}"
-    target = managed_root / todo_id
     await _git(root, "worktree", "add", "-b", branch, str(target), "HEAD")
-    return Workspace(validate_cwd(target), branch, True)
+    return Workspace(validate_cwd(target), branch, True, root)

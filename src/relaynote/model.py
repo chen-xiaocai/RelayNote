@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -14,6 +15,10 @@ class TodoState(StrEnum):
     ERROR = "error"
     TAKEN_OVER = "taken_over"
     ARCHIVED = "archived"
+
+    @property
+    def label(self) -> str:
+        return STATE_LABELS[self]
 
 
 AUTO_SLOT_STATES = frozenset(
@@ -32,6 +37,18 @@ ALLOWED_TRANSITIONS: dict[TodoState, frozenset[TodoState]] = {
     TodoState.ARCHIVED: frozenset(),
 }
 
+STATE_LABELS = {
+    TodoState.PENDING: "待完成",
+    TodoState.RUNNING: "进行中",
+    TodoState.WAITING: "等待你",
+    TodoState.STOPPING: "正在停止",
+    TodoState.SUSPENDED: "挂起",
+    TodoState.COMPLETED: "已完成",
+    TodoState.ERROR: "异常",
+    TodoState.TAKEN_OVER: "已接管",
+    TodoState.ARCHIVED: "已归档",
+}
+
 
 class InvalidTransition(ValueError):
     pass
@@ -46,6 +63,36 @@ class Todo:
     version: int
     latest_detail: str | None
     workspace: str | None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @property
+    def title(self) -> str:
+        return next((line.strip() for line in self.body.splitlines() if line.strip()), "无标题待办")
+
+
+@dataclass(frozen=True, slots=True)
+class TodoNote:
+    id: int
+    todo_id: str
+    kind: str
+    body: str
+    created_at: datetime
+    delivered_at: datetime | None
+    ack_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CodexRun:
+    run_id: str
+    todo_id: str
+    thread_id: str | None
+    turn_id: str | None
+    pid: int | None
+    endpoint: str | None
+    workspace: str
+    status: str
+    final_message: str | None
 
 
 def validate_transition(current: TodoState, target: TodoState) -> None:

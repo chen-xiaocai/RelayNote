@@ -4,6 +4,7 @@ import fcntl
 import os
 from pathlib import Path
 from types import TracebackType
+from typing import Self
 
 
 class AlreadyRunningError(RuntimeError):
@@ -16,7 +17,7 @@ class InstanceLock:
         self.path = path
         self._stream = None
 
-    def __enter__(self) -> "InstanceLock":
+    def __enter__(self) -> Self:
         self._stream = self.path.open("a+", encoding="utf-8")
         try:
             fcntl.flock(self._stream, fcntl.LOCK_EX | fcntl.LOCK_NB)

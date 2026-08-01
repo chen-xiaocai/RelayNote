@@ -29,6 +29,10 @@ class BoundaryScheduler:
         self._running = True
         try:
             await self.callback(at)
+            if self.skipped_ticks:
+                catch_up = self.skipped_ticks[-1]
+                self.skipped_ticks.clear()
+                await self.callback(catch_up)
             return True
         finally:
             self._running = False

@@ -7,14 +7,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+FORBIDDEN_KEYS = frozenset({"authorization", "api_key", "ipc_token", "password", "secret"})
 
-FORBIDDEN_KEYS = frozenset({"authorization", "api_key", "ipc_token"})
+
+def _secret_key(key: Any) -> bool:
+    normalized = str(key).lower()
+    return normalized in FORBIDDEN_KEYS or normalized.endswith(("_api_key", "_access_token", "_auth_token"))
 
 
 def _reject_secrets(value: Any, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
-            if str(key).lower() in FORBIDDEN_KEYS:
+            if _secret_key(key):
                 raise ValueError(f"secret-bearing field cannot be logged: {path}.{key}")
             _reject_secrets(child, f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
