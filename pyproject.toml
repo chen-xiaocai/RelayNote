@@ -28,6 +28,9 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [dependency-groups]
+build = [
+    "setuptools<81",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
