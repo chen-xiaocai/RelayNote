@@ -22,6 +22,10 @@ jobs:
       - run: uv run python -m compileall -q src tests
       - run: uv run python setup.py py2app
       - run: codesign --force --deep --sign - dist/RelayNote.app
+      - name: Smoke launch py2app bundle
+        run: |
+          ./dist/RelayNote.app/Contents/MacOS/RelayNote --help >/tmp/relaynote-help.log
+          cat /tmp/relaynote-help.log
       - run: ditto -c -k --sequesterRsrc --keepParent dist/RelayNote.app RelayNote-${{ matrix.arch }}.zip
       - uses: actions/upload-artifact@v4
         with:
