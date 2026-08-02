@@ -26,6 +26,12 @@ jobs:
         run: |
           ./dist/RelayNote.app/Contents/MacOS/RelayNote --help >/tmp/relaynote-help.log
           cat /tmp/relaynote-help.log
+      - name: Capture x86_64 launch crash
+        if: failure() && matrix.arch == 'x86_64'
+        run: |
+          file dist/RelayNote.app/Contents/MacOS/RelayNote
+          file dist/RelayNote.app/Contents/Frameworks/Python.framework/Versions/3.12/Python
+          lldb --batch -o "run --help" -o "bt all" -- ./dist/RelayNote.app/Contents/MacOS/RelayNote 2>&1 || true
       - run: ditto -c -k --sequesterRsrc --keepParent dist/RelayNote.app RelayNote-${{ matrix.arch }}.zip
       - uses: actions/upload-artifact@v4
         with:
