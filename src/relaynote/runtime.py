@@ -8,6 +8,7 @@ import shlex
 import shutil
 import traceback
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -43,10 +44,21 @@ class Runtime:
         self.processes: dict[str, CodexProcess] = {}
         self.stop_event = asyncio.Event()
         self.orchestrator = Orchestrator(self.store, settings, self.logger, self._tool_definitions())
-        self.scheduler = BoundaryScheduler(self.orchestrator.run)
+        self.scheduler = BoundaryScheduler(self.orchestrator.run, on_error=self._scheduler_error)
         self.scheduler_task: asyncio.Task[None] | None = None
         self._notification_tasks: set[asyncio.Task[Any]] = set()
         self._process_tasks: set[asyncio.Task[Any]] = set()
+
+    def _scheduler_error(self, at: datetime, error: BaseException) -> None:
+        self.logger.write(
+            "scheduler_error",
+            {
+                "tick": at.isoformat(),
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "stack": "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+            },
+        )
 
     async def start(self) -> None:
         self._reconcile_stale_lease()

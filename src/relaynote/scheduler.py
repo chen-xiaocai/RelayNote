@@ -16,9 +16,15 @@ def next_boundary(now: datetime, minutes: int = 5) -> datetime:
 class BoundaryScheduler:
     """Wall-clock aligned scheduler with no overlap and one wake catch-up."""
 
-    def __init__(self, callback: Callable[[datetime], Awaitable[None]], interval: int = 5) -> None:
+    def __init__(
+        self,
+        callback: Callable[[datetime], Awaitable[None]],
+        interval: int = 5,
+        on_error: Callable[[datetime, BaseException], None] | None = None,
+    ) -> None:
         self.callback = callback
         self.interval = interval
+        self.on_error = on_error
         self._running = False
         self.skipped_ticks: list[datetime] = []
 
@@ -44,4 +50,12 @@ class BoundaryScheduler:
             try:
                 await asyncio.wait_for(stop.wait(), max(0.0, (target - now).total_seconds()))
             except TimeoutError:
-                await self.tick(target)
+                await self._run_tick(target)
+
+    async def _run_tick(self, at: datetime) -> None:
+        try:
+            await self.tick(at)
+        except Exception as error:
+            if self.on_error is None:
+                raise
+            self.on_error(at, error)

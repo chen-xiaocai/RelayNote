@@ -11,6 +11,9 @@ OPTIONS = {
         "CFBundleShortVersionString": "0.1.0",
     },
     "packages": ["relaynote", "mcp"],
+    # anyio loads the asyncio backend dynamically, so py2app must be told to
+    # include it explicitly instead of relying on static import scanning.
+    "includes": ["anyio._backends._asyncio"],
     "extra_scripts": ["src/relaynote/ask_mcp.py"],
 }
 

@@ -9,8 +9,8 @@ import pytest
 
 from relaynote.ask import Answer, Option, Question, QuestionBroker
 from relaynote.db import ConflictError, Store
-from relaynote.logging import JsonlLogger
 from relaynote.instance import AlreadyRunningError, InstanceLock
+from relaynote.logging import JsonlLogger
 from relaynote.model import InvalidTransition, TodoState
 from relaynote.scheduler import BoundaryScheduler, next_boundary
 from relaynote.workspace import validate_cwd
@@ -61,6 +61,36 @@ async def test_scheduler_skips_overlap() -> None:
     assert not await scheduler.tick(at)
     gate.set()
     assert await task
+
+
+async def test_scheduler_run_continues_after_tick_error(monkeypatch) -> None:
+    failures = 0
+    errors = []
+    stop = asyncio.Event()
+
+    async def callback(_: datetime) -> None:
+        nonlocal failures
+        failures += 1
+        if failures == 1:
+            raise RuntimeError("完整调度错误")
+        stop.set()
+
+    scheduler = BoundaryScheduler(callback, on_error=lambda at, error: errors.append((at, error)))
+
+    async def immediate_timeout(coro, timeout):
+        coro.close()
+        raise TimeoutError
+
+    monkeypatch.setattr("relaynote.scheduler.asyncio.wait_for", immediate_timeout)
+    await scheduler.run(stop)
+    assert failures == 2
+    assert len(errors) == 1
+    assert str(errors[0][1]) == "完整调度错误"
+
+
+def test_py2app_config_includes_anyio_async_backend() -> None:
+    setup = Path(__file__).resolve().parents[1] / "setup.py"
+    assert "anyio._backends._asyncio" in setup.read_text()
 
 
 class RecordingPresenter:
@@ -124,9 +154,7 @@ def test_workspace_rejects_broad_paths() -> None:
 
 def test_single_instance_lock(tmp_path: Path) -> None:
     path = tmp_path / "relaynote.lock"
-    with InstanceLock(path):
-        with pytest.raises(AlreadyRunningError):
-            with InstanceLock(path):
-                pass
+    with InstanceLock(path), pytest.raises(AlreadyRunningError), InstanceLock(path):
+        pass
     with InstanceLock(path):
         assert path.read_text().isdigit()
