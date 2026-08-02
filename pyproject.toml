@@ -3,8 +3,11 @@ name = "relaynote"
 version = "0.1.0"
 description = "A local-first macOS menu bar todo orchestrator for Codex"
 requires-python = ">=3.12"
-license = "MIT"
+license = {text = "MIT"}
 dependencies = [
+    # cryptography 49+ dropped Intel macOS wheels; 48.0.1 ships universal2
+    # with bundled OpenSSL, avoiding Homebrew libcrypto in py2app builds.
+    "cryptography<49",
     "mcp[cli]>=2.0.0",
     "openai>=2.52.0",
     "py2app==0.28.8 ; sys_platform == 'darwin'",
@@ -28,8 +31,10 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [dependency-groups]
+# setuptools 71+ moved pkg_resources dependencies to top-level jaraco.text,
+# which py2app 0.28.8 cannot bundle correctly.
 build = [
-    "setuptools<81",
+    "setuptools<71",
 ]
 dev = [
     "pytest>=9.1.1",
