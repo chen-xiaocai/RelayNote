@@ -28,8 +28,10 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [dependency-groups]
+# setuptools 71+ moved pkg_resources dependencies to top-level jaraco.text,
+# which py2app 0.28.8 cannot bundle correctly.
 build = [
-    "setuptools<81",
+    "setuptools<71",
 ]
 dev = [
     "pytest>=9.1.1",
