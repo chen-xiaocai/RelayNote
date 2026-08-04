@@ -1,3 +1,5 @@
+"""Unix socket 路径处理工具，避免系统路径长度限制与符号链接攻击。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -10,6 +12,7 @@ MAX_UNIX_SOCKET_PATH = 96
 
 
 def safe_unix_socket_path(path: Path, namespace: str) -> Path:
+    """在路径过长时用哈希缩短 socket 父目录，并校验目录归属安全。"""
     resolved = path.expanduser().resolve()
     if len(os.fsencode(resolved)) <= MAX_UNIX_SOCKET_PATH:
         return resolved

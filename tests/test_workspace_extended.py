@@ -1,3 +1,5 @@
+"""Git 工作区准备的扩展测试。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -9,11 +11,13 @@ from relaynote.workspace import prepare_workspace
 
 
 async def run_git(cwd: Path, *args: str) -> None:
+    """在测试目录同步执行 Git 命令并断言成功。"""
     process = await asyncio.create_subprocess_exec("git", *args, cwd=cwd)
     assert await process.wait() == 0
 
 
 async def test_non_git_project_is_copied_and_initialized(tmp_path: Path) -> None:
+    """验证非 Git 项目会被完整复制到托管目录并初始化。"""
     source = tmp_path / "source"
     source.mkdir()
     (source / "完整.txt").write_text("原始内容", encoding="utf-8")
@@ -24,6 +28,7 @@ async def test_non_git_project_is_copied_and_initialized(tmp_path: Path) -> None
 
 
 async def test_dirty_git_requires_choice_and_head_creates_worktree(tmp_path: Path) -> None:
+    """验证脏仓库默认要求选择，head 策略创建隔离 worktree。"""
     source = tmp_path / "source"
     source.mkdir()
     await run_git(source, "init")

@@ -1,3 +1,5 @@
+"""SQLite 持久化层：待办状态机、运行记录、问题、调度上下文与工具幂等。"""
+
 from __future__ import annotations
 
 import json
@@ -104,11 +106,15 @@ def _json(value: Any) -> str:
 
 
 class ConflictError(RuntimeError):
-    pass
+    """并发写入或自动槽占用导致的乐观锁冲突。"""
+
 
 
 class Store:
+    """数据库访问入口，统一管理连接、事务、迁移与业务读写。"""
+
     def __init__(self, path: Path) -> None:
+        """初始化数据库目录，执行建表语句和旧版本迁移。"""
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = path
         self._lock = threading.RLock()
@@ -118,6 +124,7 @@ class Store:
 
     @staticmethod
     def _migrate(db: sqlite3.Connection) -> None:
+        """补齐 codex_runs 新列，并把旧版 todo_additions 合并进 todo_notes。"""
         columns = {row[1] for row in db.execute("PRAGMA table_info(codex_runs)")}
         for name, declaration in (
             ("final_message", "TEXT"),
@@ -127,6 +134,7 @@ class Store:
             if name not in columns:
                 db.execute(f"ALTER TABLE codex_runs ADD COLUMN {name} {declaration}")
         db.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
+        # 老版本待办追加表统一迁移到 todo_notes，迁移过程保持幂等。
         db.execute(
             "INSERT INTO todo_notes(todo_id,kind,body,created_at,delivered_at,ack_id) "
             "SELECT a.todo_id,'addition',a.body,a.created_at,a.delivered_at,a.ack_id FROM todo_additions a "
@@ -140,6 +148,7 @@ class Store:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
+        """打开一个带行映射和 WAL 参数的新连接。"""
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
@@ -151,6 +160,7 @@ class Store:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
+        """提供立即开始、成功提交、异常回滚的事务上下文。"""
         with self._lock, self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -163,6 +173,7 @@ class Store:
 
     @staticmethod
     def _todo(row: sqlite3.Row) -> Todo:
+        """把数据库行转换为 Todo 数据对象。"""
         return Todo(
             row["id"], row["body"], TodoState(row["state"]), row["sort_key"],
             row["version"], row["latest_detail"], row["workspace"],
@@ -170,6 +181,7 @@ class Store:
         )
 
     def create_todo(self, body: str) -> Todo:
+        """创建待办，写入初始状态、转换记录和原始正文笔记。"""
         if not body.strip():
             raise ValueError("todo body cannot be empty")
         todo_id, now = str(uuid4()), _now()
@@ -190,6 +202,7 @@ class Store:
         return self.get_todo(todo_id)
 
     def get_todo(self, todo_id: str) -> Todo:
+        """按 ID 读取待办，不存在时抛出 KeyError。"""
         with self.connect() as db:
             row = db.execute("SELECT * FROM todos WHERE id=?", (todo_id,)).fetchone()
         if row is None:
@@ -197,6 +210,7 @@ class Store:
         return self._todo(row)
 
     def list_todos(self, include_archived: bool = False) -> list[Todo]:
+        """按自动任务优先、再按排序键返回待办列表。"""
         where = "" if include_archived else " WHERE state != 'archived'"
         query = (
             "SELECT * FROM todos" + where
@@ -207,6 +221,7 @@ class Store:
         return [self._todo(row) for row in rows]
 
     def reorder(self, ordered_ids: list[str]) -> None:
+        """重新排列可移动待办；自动槽中的任务不允许参与排序。"""
         if len(ordered_ids) != len(set(ordered_ids)):
             raise ValueError("todo order contains duplicate ids")
         with self.transaction() as db:
@@ -231,6 +246,7 @@ class Store:
         expected_version: int,
         detail: str | None = None,
     ) -> Todo:
+        """在版本一致的乐观锁条件下转换待办状态。"""
         now = _now()
         with self.transaction() as db:
             self._transition(db, todo_id, target, expected_version, detail, now)
@@ -245,6 +261,7 @@ class Store:
         detail: str | None,
         now: str,
     ) -> None:
+        """事务内执行状态转换，包括自动槽校验和转换历史写入。"""
         row = db.execute("SELECT state,version FROM todos WHERE id=?", (todo_id,)).fetchone()
         if row is None:
             raise KeyError(todo_id)
@@ -253,6 +270,7 @@ class Store:
         current = TodoState(row["state"])
         validate_transition(current, target)
         if target in AUTO_SLOT_STATES:
+            # 全局只能有一个自动任务处于运行/等待/停止状态。
             lease = db.execute("SELECT todo_id FROM auto_lease WHERE singleton=1").fetchone()
             if lease is not None and lease["todo_id"] != todo_id:
                 raise ConflictError(f"automatic slot held by {lease['todo_id']}")
@@ -274,9 +292,11 @@ class Store:
                 (todo_id, "transition", detail, now),
             )
         if target not in AUTO_SLOT_STATES:
+            # 离开自动槽后必须释放全局 lease，让其他待办可以接手。
             db.execute("DELETE FROM auto_lease WHERE todo_id=?", (todo_id,))
 
     def acquire_auto_lease(self, todo_id: str, run_id: str) -> None:
+        """原子占用全局自动任务槽，已占用时抛出 ConflictError。"""
         with self.transaction() as db:
             try:
                 db.execute("INSERT INTO auto_lease VALUES(1,?,?,?)", (todo_id, run_id, _now()))
@@ -284,15 +304,18 @@ class Store:
                 raise ConflictError("automatic slot already occupied") from error
 
     def release_auto_lease(self, todo_id: str) -> None:
+        """释放指定待办占用的自动任务槽。"""
         with self.transaction() as db:
             db.execute("DELETE FROM auto_lease WHERE todo_id=?", (todo_id,))
 
     def automatic_lease(self) -> tuple[str, str] | None:
+        """返回当前自动槽的 todo_id 和 run_id。"""
         with self.connect() as db:
             row = db.execute("SELECT todo_id,run_id FROM auto_lease WHERE singleton=1").fetchone()
         return (row["todo_id"], row["run_id"]) if row else None
 
     def bind_run(self, todo_id: str, expected_version: int, run_id: str, workspace: Path) -> CodexRun:
+        """原子绑定运行记录、占用自动槽并把待办切换为运行中。"""
         now = _now()
         with self.transaction() as db:
             if db.execute("SELECT 1 FROM auto_lease WHERE singleton=1").fetchone():
@@ -310,6 +333,7 @@ class Store:
         return self.get_run(run_id)
 
     def resume_existing_run(self, todo_id: str, expected_version: int, run_id: str) -> Todo:
+        """恢复已有 thread 时重新占用自动槽，并把待办切回运行中。"""
         now = _now()
         with self.transaction() as db:
             if db.execute("SELECT 1 FROM auto_lease WHERE singleton=1").fetchone():
@@ -320,11 +344,13 @@ class Store:
         return self.get_todo(todo_id)
 
     def prioritize(self, todo_id: str) -> None:
+        """把待办移到可移动列表最前面。"""
         with self.transaction() as db:
             minimum = db.execute("SELECT COALESCE(MIN(sort_key),1024) FROM todos WHERE archived_at IS NULL").fetchone()[0]
             db.execute("UPDATE todos SET sort_key=?,version=version+1,updated_at=? WHERE id=?", (minimum - 1024, _now(), todo_id))
 
     def create_taken_over_run(self, todo_id: str, workspace: Path, run_id: str | None = None) -> CodexRun:
+        """为人工接管创建 claimed 运行记录，但不占用自动槽。"""
         run_id, now = run_id or str(uuid4()), _now()
         with self.transaction() as db:
             db.execute(
@@ -335,6 +361,7 @@ class Store:
         return self.get_run(run_id)
 
     def get_run(self, run_id: str) -> CodexRun:
+        """按 run_id 读取运行记录。"""
         with self.connect() as db:
             row = db.execute("SELECT * FROM codex_runs WHERE run_id=?", (run_id,)).fetchone()
         if row is None:
@@ -342,6 +369,7 @@ class Store:
         return self._run(row)
 
     def latest_run(self, todo_id: str) -> CodexRun | None:
+        """返回待办最近一次运行记录。"""
         with self.connect() as db:
             row = db.execute(
                 "SELECT * FROM codex_runs WHERE todo_id=? ORDER BY created_at DESC LIMIT 1",
@@ -351,12 +379,14 @@ class Store:
 
     @staticmethod
     def _run(row: sqlite3.Row) -> CodexRun:
+        """把数据库行转换为 CodexRun 数据对象。"""
         return CodexRun(
             row["run_id"], row["todo_id"], row["thread_id"], row["turn_id"],
             row["pid"], row["endpoint"], row["workspace"], row["status"], row["final_message"],
         )
 
     def update_run(self, run_id: str, **fields: Any) -> CodexRun:
+        """更新运行记录中允许修改的字段。"""
         allowed = {"thread_id", "turn_id", "pid", "endpoint", "status", "final_message", "clean_stop", "error_json"}
         if not fields or not set(fields) <= allowed:
             raise ValueError("invalid codex run update")
@@ -373,6 +403,7 @@ class Store:
         return self.get_run(run_id)
 
     def append_note(self, todo_id: str, body: str, kind: str = "addition", ack_id: str | None = None) -> TodoNote:
+        """追加不可变笔记；相同 ack_id 重复写入时返回原记录。"""
         if not body.strip():
             raise ValueError("note body cannot be empty")
         now = _now()
@@ -392,6 +423,7 @@ class Store:
         return self.get_note(note_id)
 
     def get_note(self, note_id: int) -> TodoNote:
+        """按笔记 ID 读取记录。"""
         with self.connect() as db:
             row = db.execute("SELECT * FROM todo_notes WHERE id=?", (note_id,)).fetchone()
         if row is None:
@@ -399,14 +431,17 @@ class Store:
         return TodoNote(row["id"], row["todo_id"], row["kind"], row["body"], _date(row["created_at"]), _date(row["delivered_at"]), row["ack_id"])
 
     def list_notes(self, todo_id: str) -> list[TodoNote]:
+        """按创建顺序返回待办的全部笔记。"""
         with self.connect() as db:
             rows = db.execute("SELECT * FROM todo_notes WHERE todo_id=? ORDER BY created_at,id", (todo_id,)).fetchall()
         return [TodoNote(row["id"], row["todo_id"], row["kind"], row["body"], _date(row["created_at"]), _date(row["delivered_at"]), row["ack_id"]) for row in rows]
 
     def pending_additions(self, todo_id: str) -> list[TodoNote]:
+        """返回尚未投递给 Codex 的普通追加笔记。"""
         return [note for note in self.pending_delivery_notes(todo_id) if note.kind == "addition"]
 
     def pending_delivery_notes(self, todo_id: str) -> list[TodoNote]:
+        """返回尚未投递的追加和 followup 笔记。"""
         with self.connect() as db:
             rows = db.execute(
                 "SELECT * FROM todo_notes WHERE todo_id=? AND kind IN ('addition','followup') AND delivered_at IS NULL ORDER BY id",
@@ -415,6 +450,7 @@ class Store:
         return [TodoNote(row["id"], row["todo_id"], row["kind"], row["body"], _date(row["created_at"]), None, row["ack_id"]) for row in rows]
 
     def mark_notes_delivered(self, note_ids: list[int], ack_id: str) -> None:
+        """记录笔记已随某 turn 投递，ack_id 用于去重。"""
         if not note_ids:
             return
         placeholders = ",".join("?" for _ in note_ids)
@@ -425,6 +461,7 @@ class Store:
             )
 
     def record_workspace(self, todo_id: str, path: Path, project_root: Path | None, branch: str | None, is_worktree: bool, dirty_policy: str | None) -> None:
+        """保存或更新待办工作区信息。"""
         with self.transaction() as db:
             db.execute(
                 "INSERT INTO workspaces(todo_id,path,project_root,branch,is_worktree,dirty_policy,created_at) VALUES(?,?,?,?,?,?,?) "
@@ -433,6 +470,7 @@ class Store:
             )
 
     def record_codex_event(self, run_id: str, method: str, raw: Any, detail: str | None = None) -> int:
+        """记录完整 Codex 事件，并可选更新待办的最近进度。"""
         with self.transaction() as db:
             cursor = db.execute(
                 "INSERT INTO codex_events(run_id,method,raw_json,created_at) VALUES(?,?,?,?)",
@@ -446,6 +484,7 @@ class Store:
         return int(cursor.lastrowid)
 
     def codex_events(self, todo_id: str) -> list[dict[str, Any]]:
+        """按时间顺序返回某待办的全部 Codex 事件。"""
         with self.connect() as db:
             rows = db.execute(
                 "SELECT e.* FROM codex_events e JOIN codex_runs r ON r.run_id=e.run_id WHERE r.todo_id=? ORDER BY e.id",
@@ -454,6 +493,7 @@ class Store:
         return [{"id": row["id"], "run_id": row["run_id"], "method": row["method"], "raw": json.loads(row["raw_json"]), "created_at": row["created_at"]} for row in rows]
 
     def create_question(self, question: Any) -> None:
+        """在展示前持久化问题，保证重启后状态可追踪。"""
         now = _now()
         options = [{"label": option.label, "description": option.description} for option in question.options]
         with self.transaction() as db:
@@ -463,6 +503,7 @@ class Store:
             )
 
     def mark_question_shown(self, question_id: str, shown_at: datetime, deadline: datetime) -> None:
+        """记录问题实际展示时间和超时截止时间。"""
         with self.transaction() as db:
             db.execute(
                 "UPDATE questions SET state='shown',shown_at=?,deadline_at=? WHERE id=?",
@@ -470,6 +511,7 @@ class Store:
             )
 
     def answer_question(self, question_id: str, answer: Any) -> None:
+        """保存用户对问题的回答。"""
         with self.transaction() as db:
             db.execute(
                 "UPDATE questions SET state='answered',answered_at=?,answer_json=? WHERE id=?",
@@ -477,6 +519,7 @@ class Store:
             )
 
     def timeline(self, todo_id: str) -> list[dict[str, Any]]:
+        """合并笔记、问题与转换详情，返回待办时间线。"""
         items: list[dict[str, Any]] = []
         with self.connect() as db:
             for row in db.execute("SELECT * FROM todo_notes WHERE todo_id=?", (todo_id,)):
@@ -488,6 +531,7 @@ class Store:
         return sorted(items, key=lambda item: item["at"])
 
     def start_orchestrator_run(self, run_id: str, tick_at: datetime, input_items: Any, compact_prompt: str | None) -> None:
+        """记录一次调度器运行的开始状态和完整输入。"""
         now = _now()
         with self.transaction() as db:
             db.execute(
@@ -496,6 +540,7 @@ class Store:
             )
 
     def finish_orchestrator_run(self, run_id: str, status: str, output: Any, usage: Any) -> None:
+        """保存调度器运行结果与 token 用量。"""
         with self.transaction() as db:
             db.execute(
                 "UPDATE orchestrator_runs SET status=?,output_json=?,usage_json=?,updated_at=? WHERE run_id=?",
@@ -503,6 +548,7 @@ class Store:
             )
 
     def append_orchestrator_items(self, run_id: str, items: list[Any], token_count: int = 0) -> None:
+        """追加调度器输出项，token 只记在第一条以简化统计。"""
         if not items:
             return
         with self.transaction() as db:
@@ -513,6 +559,7 @@ class Store:
                 )
 
     def orchestrator_context(self) -> tuple[str | None, list[Any], int, int]:
+        """返回压缩总结、未压缩历史、估算 token 数和最后记录 ID。"""
         with self.connect() as db:
             state = db.execute("SELECT * FROM orchestrator_state WHERE singleton=1").fetchone()
             through = state["compacted_through"] if state else 0
@@ -523,6 +570,7 @@ class Store:
         return prompt, [json.loads(row["item_json"]) for row in rows], tokens, last_id
 
     def save_compaction(self, compact_prompt: str, through_id: int, token_count: int) -> None:
+        """保存压缩后的历史总结和压缩截止位置。"""
         with self.transaction() as db:
             db.execute(
                 "INSERT INTO orchestrator_state(singleton,compact_prompt,compacted_through,token_count,updated_at) VALUES(1,?,?,?,?) "
@@ -531,6 +579,7 @@ class Store:
             )
 
     def get_tool_call(self, run_id: str, call_id: str) -> dict[str, Any] | None:
+        """读取已有工具调用记录，供重试时复用结果。"""
         with self.connect() as db:
             row = db.execute("SELECT * FROM tool_calls WHERE run_id=? AND call_id=?", (run_id, call_id)).fetchone()
         if row is None:
@@ -538,6 +587,7 @@ class Store:
         return {"name": row["name"], "arguments": json.loads(row["arguments_json"]), "result": json.loads(row["result_json"]) if row["result_json"] else None, "status": row["status"]}
 
     def begin_tool_call(self, run_id: str, call_id: str, name: str, arguments: Any) -> bool:
+        """标记工具调用开始，重复 call_id 时返回 False。"""
         with self.transaction() as db:
             try:
                 db.execute(
@@ -549,6 +599,7 @@ class Store:
         return True
 
     def finish_tool_call(self, run_id: str, call_id: str, result: Any, status: str = "completed") -> None:
+        """保存工具调用的完整结果和状态。"""
         with self.transaction() as db:
             db.execute(
                 "UPDATE tool_calls SET result_json=?,status=? WHERE run_id=? AND call_id=?",
@@ -556,17 +607,20 @@ class Store:
             )
 
     def save_tool_result(self, run_id: str, call_id: str, name: str, arguments: Any, result: Any) -> bool:
+        """一次性写入工具结果；已有记录时不覆盖。"""
         if not self.begin_tool_call(run_id, call_id, name, arguments):
             return False
         self.finish_tool_call(run_id, call_id, result)
         return True
 
     def get_setting(self, key: str, default: Any = None) -> Any:
+        """读取 JSON 编码的设置项。"""
         with self.connect() as db:
             row = db.execute("SELECT value_json FROM settings WHERE key=?", (key,)).fetchone()
         return json.loads(row["value_json"]) if row else default
 
     def set_setting(self, key: str, value: Any) -> None:
+        """写入 JSON 编码的设置项，已存在时覆盖。"""
         with self.transaction() as db:
             db.execute(
                 "INSERT INTO settings(key,value_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",

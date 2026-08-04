@@ -1,4 +1,4 @@
-"""Tests for discovering Codex sessions by working directory."""
+"""按工作目录发现 Codex session ID 的测试。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ from samples.get_codex_session_ids import get_codex_session_ids
 
 
 class GetCodexSessionIdsTest(unittest.TestCase):
+    """get_codex_session_ids 单元测试。"""
+
     def test_returns_only_sessions_for_the_requested_working_directory(self) -> None:
+        """验证只返回 cwd 匹配目标目录的 session。"""
         matching_ids = [
             "019fbc39-f131-77d3-8699-f4ef726ba58e",
             "019fbc1b-61f9-7470-b7ac-8504979ee3ec",
@@ -47,14 +50,15 @@ class GetCodexSessionIdsTest(unittest.TestCase):
             )
 
     def test_rejects_a_missing_working_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            with self.assertRaises(FileNotFoundError):
-                get_codex_session_ids(
-                    Path(temp_dir) / "missing", Path(temp_dir)
-                )
+        """验证缺失目录会抛出 FileNotFoundError。"""
+        with tempfile.TemporaryDirectory() as temp_dir, self.assertRaises(FileNotFoundError):
+            get_codex_session_ids(
+                Path(temp_dir) / "missing", Path(temp_dir)
+            )
 
     @staticmethod
     def _write_session(path: Path, session_id: str, cwd: Path) -> None:
+        """写入一条包含 session_meta 的测试 session 文件。"""
         path.write_text(
             json.dumps(
                 {

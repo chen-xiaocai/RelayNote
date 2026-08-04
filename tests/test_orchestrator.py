@@ -1,6 +1,7 @@
+"""调度器工具循环、上下文重建与工具幂等性测试。"""
+
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,8 @@ from relaynote.orchestrator import Orchestrator, ToolDefinition
 
 
 class FakeResponse:
+    """带 model_dump 的伪模型响应。"""
+
     def __init__(self, raw):
         self.raw = raw
 
@@ -20,19 +23,24 @@ class FakeResponse:
 
 
 class FakeResponses:
+    """按调用顺序返回预设输出的伪 Responses 客户端。"""
+
     def __init__(self, outputs):
         self.outputs = list(outputs)
         self.requests = []
 
     async def create(self, **kwargs):
+        """记录请求并返回下一个预设响应。"""
         self.requests.append(kwargs)
         return FakeResponse(self.outputs.pop(0))
 
 
 async def test_stateless_tool_loop_reconstructs_context_and_drops_snapshots(tmp_path: Path) -> None:
+    """验证工具循环重建上下文，且最新快照不会进入持久历史。"""
     called = []
 
     async def inspect(value: str):
+        """测试工具，记录收到的参数并返回。"""
         called.append(value)
         return {"seen": value}
 
@@ -59,11 +67,13 @@ async def test_stateless_tool_loop_reconstructs_context_and_drops_snapshots(tmp_
 
 
 async def test_tool_calls_are_idempotent_within_a_run(tmp_path: Path) -> None:
+    """验证同一 run 内相同 call_id 只执行一次工具。"""
     store = Store(tmp_path / "db.sqlite3")
     settings = Settings(tmp_path, tmp_path / "work", Path("/bin/false"), "key")
     count = 0
 
     async def mutate():
+        """带副作用的测试工具。"""
         nonlocal count
         count += 1
         return {"count": count}

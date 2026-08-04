@@ -1,3 +1,5 @@
+"""完整原始 JSONL 日志记录，并在写入前拒绝敏感字段。"""
+
 from __future__ import annotations
 
 import json
@@ -11,11 +13,13 @@ FORBIDDEN_KEYS = frozenset({"authorization", "api_key", "ipc_token", "password",
 
 
 def _secret_key(key: Any) -> bool:
+    """判断字段名是否可能携带凭据，命中时禁止写入日志。"""
     normalized = str(key).lower()
     return normalized in FORBIDDEN_KEYS or normalized.endswith(("_api_key", "_access_token", "_auth_token"))
 
 
 def _reject_secrets(value: Any, path: str = "$") -> None:
+    """递归检查嵌套结构，发现敏感字段时直接抛出异常。"""
     if isinstance(value, dict):
         for key, child in value.items():
             if _secret_key(key):
@@ -27,7 +31,7 @@ def _reject_secrets(value: Any, path: str = "$") -> None:
 
 
 class JsonlLogger:
-    """Append complete raw records. Values are never shortened or projected."""
+    """追加完整原始记录；字符串、数组和嵌套对象一律不截断、不提炼。"""
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -35,6 +39,7 @@ class JsonlLogger:
         self._lock = threading.Lock()
 
     def write(self, category: str, raw: Any) -> None:
+        """把带时间戳的完整原始数据写成一行 JSON，并同步刷盘。"""
         _reject_secrets(raw)
         record = {
             "timestamp": datetime.now(UTC).isoformat(),

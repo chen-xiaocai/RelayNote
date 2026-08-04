@@ -1,4 +1,4 @@
-"""Print all lifecycle events for a local Codex session."""
+"""打印本地 Codex session 全部生命周期事件。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -16,6 +15,7 @@ from samples.codex_session import get_lifecycle_events
 
 
 def parse_args() -> argparse.Namespace:
+    """解析命令行参数。"""
     parser = argparse.ArgumentParser(
         description="Print all lifecycle events for a Codex session."
     )
@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """命令行入口：读取事件并以 JSON 输出。"""
     args = parse_args()
     lifecycle_events = get_lifecycle_events(args.session_id, args.sessions_dir)
     print(json.dumps(lifecycle_events, ensure_ascii=False, indent=2))

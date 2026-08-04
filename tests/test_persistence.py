@@ -1,3 +1,5 @@
+"""持久化层测试：不可变笔记、原子运行绑定、排序与迁移。"""
+
 from __future__ import annotations
 
 import sqlite3
@@ -10,6 +12,7 @@ from relaynote.model import TodoState
 
 
 def test_notes_are_immutable_idempotent_and_ordered(tmp_path: Path) -> None:
+    """验证笔记按创建顺序保存，相同 ack_id 不会重复。"""
     store = Store(tmp_path / "relaynote.sqlite3")
     todo = store.create_todo("第一行\n完整正文")
     first = store.append_note(todo.id, "追加一", ack_id="append-1")
@@ -22,6 +25,7 @@ def test_notes_are_immutable_idempotent_and_ordered(tmp_path: Path) -> None:
 
 
 def test_bind_run_is_atomic_and_completion_releases_slot(tmp_path: Path) -> None:
+    """验证运行绑定原子占用自动槽，完成后自动释放。"""
     store = Store(tmp_path / "relaynote.sqlite3")
     first = store.create_todo("first")
     second = store.create_todo("second")
@@ -37,6 +41,7 @@ def test_bind_run_is_atomic_and_completion_releases_slot(tmp_path: Path) -> None
 
 
 def test_reorder_excludes_pinned_automatic_task(tmp_path: Path) -> None:
+    """验证自动任务固定置顶，不参与用户排序。"""
     store = Store(tmp_path / "relaynote.sqlite3")
     first, second, third = (store.create_todo(value) for value in ("first", "second", "third"))
     store.bind_run(first.id, first.version, "run", tmp_path)
@@ -45,6 +50,7 @@ def test_reorder_excludes_pinned_automatic_task(tmp_path: Path) -> None:
 
 
 def test_v1_additions_are_migrated_without_duplication(tmp_path: Path) -> None:
+    """验证旧版追加表迁移一次后不会重复。"""
     path = tmp_path / "relaynote.sqlite3"
     db = sqlite3.connect(path)
     db.executescript(

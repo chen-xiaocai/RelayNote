@@ -1,4 +1,4 @@
-"""List Codex session IDs associated with a working directory."""
+"""列出与指定工作目录关联的 Codex session ID。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from uuid import UUID
 
 
 def _session_meta_from_file(path: Path) -> tuple[str, Path] | None:
-    """Return the validated session ID and working directory from a session file."""
+    """从 session 文件中读取并校验 session ID 和工作目录。"""
     try:
         with path.open(encoding="utf-8") as session_file:
             for line in session_file:
@@ -36,6 +36,7 @@ def _session_meta_from_file(path: Path) -> tuple[str, Path] | None:
                 except ValueError:
                     return None
     except (OSError, UnicodeError):
+        # 单文件读取失败不影响其他 session 文件。
         return None
 
     return None
@@ -45,16 +46,7 @@ def get_codex_session_ids(
     working_directory: Path | str,
     sessions_directory: Path | str | None = None,
 ) -> list[str]:
-    """Return session IDs whose recorded working directory matches the input.
-
-    Codex session files are read recursively from ``sessions_directory``, which
-    defaults to ``~/.codex/sessions``. Files without valid session metadata are
-    ignored.
-
-    Raises:
-        FileNotFoundError: If either directory does not exist.
-        NotADirectoryError: If either input is not a directory.
-    """
+    """递归扫描 session 文件，返回工作目录匹配的 session ID。"""
     target = Path(working_directory).expanduser()
     sessions_root = (
         Path(sessions_directory).expanduser()
@@ -73,12 +65,14 @@ def get_codex_session_ids(
     for candidate in sessions_root.rglob("*.jsonl"):
         metadata = _session_meta_from_file(candidate)
         if metadata is not None and metadata[1] == resolved_target:
+            # 只有记录的 cwd 与目标目录一致时才纳入结果。
             session_ids.add(metadata[0])
 
     return sorted(session_ids)
 
 
 def parse_args() -> argparse.Namespace:
+    """解析命令行参数。"""
     parser = argparse.ArgumentParser(
         description="Print Codex session IDs for a working directory."
     )
@@ -92,6 +86,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """命令行入口：逐行打印匹配的 session ID。"""
     args = parse_args()
     for session_id in get_codex_session_ids(
         args.working_directory, args.sessions_directory

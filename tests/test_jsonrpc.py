@@ -1,14 +1,17 @@
+"""JSON-RPC 换行传输的测试。"""
+
 from __future__ import annotations
 
 import asyncio
-import json
 
 from relaynote.jsonrpc import JsonRpcStream
 
 
 async def test_jsonrpc_accepts_split_input() -> None:
+    """验证一条 JSON 消息被拆成多次写入时仍能完整解析。"""
     received = []
     async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """分两次写入同一行 JSON，模拟网络分片。"""
         writer.write(b'{"jsonrpc":"2.0","method":"progress","params":{"text":"full')
         await writer.drain()
         writer.write(' 内容"}}\n'.encode())

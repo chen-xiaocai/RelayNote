@@ -1,3 +1,5 @@
+"""RelayNote Ask MCP 服务，通过本地 Unix socket 桥接全局问题队列。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -35,14 +37,17 @@ TOOL_SCHEMA = {
 
 
 async def broker_call(arguments: dict[str, Any], unavailable_timeout: float = 5) -> dict[str, Any]:
+    """通过环境变量定位 Ask socket，调用桥接服务并在失败时返回推荐项兜底。"""
     socket = os.environ.get("RELAYNOTE_ASK_SOCKET")
     token = os.environ.get("RELAYNOTE_ASK_TOKEN")
     recommended = arguments.get("recommended")
     fallback = {"option": recommended, "other": None, "timed_out": True}
     if not socket or not token:
+        # 缺少 socket 或 token 时不能阻塞 Codex，直接返回推荐项。
         return fallback
 
     async def exchange() -> dict[str, Any]:
+        """建立一次短连接，发送问题并读取 JSON 答案。"""
         reader, writer = await asyncio.open_unix_connection(socket)
         request = {
             "token": token,
@@ -63,11 +68,14 @@ async def broker_call(arguments: dict[str, Any], unavailable_timeout: float = 5)
     try:
         return await asyncio.wait_for(exchange(), unavailable_timeout)
     except (TimeoutError, OSError, RuntimeError, json.JSONDecodeError):
+        # 桥不可用或超时都属于可恢复的展示故障，按推荐项继续。
         return fallback
 
 
 def create_server() -> Server[Any]:
+    """创建只暴露 ask_user 工具的 MCP server。"""
     async def list_tools(context: Any, params: Any) -> types.ListToolsResult:
+        """向客户端声明唯一的 ask_user 工具。"""
         return types.ListToolsResult(
             tools=[
                 types.Tool(
@@ -79,6 +87,7 @@ def create_server() -> Server[Any]:
         )
 
     async def call_tool(context: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
+        """校验推荐项索引，然后调用本地桥并返回结构化结果。"""
         if params.name != "ask_user":
             return types.CallToolResult(
                 content=[types.TextContent(text=f"unsupported tool: {params.name}")],
@@ -88,6 +97,7 @@ def create_server() -> Server[Any]:
         options = arguments.get("options") or []
         recommended = arguments.get("recommended")
         if not isinstance(recommended, int) or recommended not in range(len(options)):
+            # 推荐项必须指向实际提供的选项之一。
             return types.CallToolResult(
                 content=[types.TextContent(text="recommended must identify one supplied option")],
                 isError=True,
@@ -103,10 +113,12 @@ def create_server() -> Server[Any]:
 
 
 async def run() -> None:
+    """通过 stdio 启动 MCP server 并保持运行。"""
     server = create_server()
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
 def main() -> None:
+    """MCP 命令行入口。"""
     asyncio.run(run())

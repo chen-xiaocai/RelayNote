@@ -1,4 +1,4 @@
-"""Utilities for inspecting local Codex session lifecycle events."""
+"""本地 Codex session 生命周期事件检查工具。"""
 
 from __future__ import annotations
 
@@ -7,12 +7,11 @@ from pathlib import Path
 from typing import TypedDict
 from uuid import UUID
 
-
 LIFECYCLE_MARKERS = frozenset({"task_started", "task_complete", "turn_aborted"})
 
 
 class LifecycleMarker(TypedDict):
-    """The latest lifecycle marker recorded for a Codex session."""
+    """Codex session 中记录的最新生周期标记。"""
 
     marker: str
     timestamp: str
@@ -22,21 +21,7 @@ def get_lifecycle_marker(
     session_id: str,
     sessions_dir: Path | None = None,
 ) -> LifecycleMarker | None:
-    """Return the latest lifecycle marker and timestamp for ``session_id``.
-
-    Args:
-        session_id: Full Codex session UUID.
-        sessions_dir: Codex sessions root. Defaults to ``~/.codex/sessions``.
-
-    Returns:
-        A dictionary containing the marker and its original ISO 8601 timestamp,
-        or ``None`` when the session exists but has no lifecycle marker.
-
-    Raises:
-        ValueError: If ``session_id`` is not a valid UUID.
-        FileNotFoundError: If no matching session file exists.
-        RuntimeError: If more than one session file matches the same ID.
-    """
+    """返回指定 session 的最新生命周期标记和原始时间戳。"""
     events = get_lifecycle_events(session_id, sessions_dir)
     return events[-1] if events else None
 
@@ -45,28 +30,16 @@ def get_lifecycle_events(
     session_id: str,
     sessions_dir: Path | None = None,
 ) -> list[LifecycleMarker]:
-    """Return all lifecycle markers recorded for ``session_id``.
-
-    Events are returned in the same order in which they appear in the session
-    file. Each item contains the marker and its original ISO 8601 timestamp.
-
-    Args:
-        session_id: Full Codex session UUID.
-        sessions_dir: Codex sessions root. Defaults to ``~/.codex/sessions``.
-
-    Raises:
-        ValueError: If ``session_id`` is not a valid UUID or the file contains
-            invalid JSON.
-        FileNotFoundError: If no matching session file exists.
-        RuntimeError: If more than one session file matches the same ID.
-    """
+    """按文件顺序返回 session 的全部生命周期标记。"""
     normalized_id = str(UUID(session_id))
     root = sessions_dir or Path.home() / ".codex" / "sessions"
+    # 文件名中包含 UUID，直接递归搜索即可定位唯一 session 文件。
     matches = list(root.glob(f"**/*{normalized_id}.jsonl"))
 
     if not matches:
         raise FileNotFoundError(f"Codex session not found: {normalized_id}")
     if len(matches) > 1:
+        # 同一 ID 匹配多个文件时全部列出，避免猜测错误文件。
         paths = "\n".join(str(path) for path in matches)
         raise RuntimeError(
             f"Multiple Codex session files found for {normalized_id}:\n{paths}"
@@ -83,6 +56,7 @@ def get_lifecycle_events(
                 ) from error
 
             if event.get("type") != "event_msg":
+                # 只关心事件消息，响应记录不在生命周期标记范围内。
                 continue
 
             payload = event.get("payload")

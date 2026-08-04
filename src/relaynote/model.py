@@ -1,3 +1,5 @@
+"""待办数据模型、状态标签与合法状态转换表。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,6 +8,8 @@ from enum import StrEnum
 
 
 class TodoState(StrEnum):
+    """待办生命周期中的全部状态。"""
+
     PENDING = "pending"
     RUNNING = "running"
     WAITING = "waiting_user"
@@ -18,6 +22,7 @@ class TodoState(StrEnum):
 
     @property
     def label(self) -> str:
+        """返回用户界面使用的中文状态标签。"""
         return STATE_LABELS[self]
 
 
@@ -51,11 +56,14 @@ STATE_LABELS = {
 
 
 class InvalidTransition(ValueError):
-    pass
+    """状态机不允许当前状态到目标状态的转换。"""
+
 
 
 @dataclass(frozen=True, slots=True)
 class Todo:
+    """一条待办的核心记录，version 用于乐观并发控制。"""
+
     id: str
     body: str
     state: TodoState
@@ -68,11 +76,14 @@ class Todo:
 
     @property
     def title(self) -> str:
+        """从正文第一行生成列表标题。"""
         return next((line.strip() for line in self.body.splitlines() if line.strip()), "无标题待办")
 
 
 @dataclass(frozen=True, slots=True)
 class TodoNote:
+    """追加给待办的不可变笔记，包含投递确认信息。"""
+
     id: int
     todo_id: str
     kind: str
@@ -84,6 +95,8 @@ class TodoNote:
 
 @dataclass(frozen=True, slots=True)
 class CodexRun:
+    """一次 Codex app-server 运行在数据库中的记录。"""
+
     run_id: str
     todo_id: str
     thread_id: str | None
@@ -96,5 +109,6 @@ class CodexRun:
 
 
 def validate_transition(current: TodoState, target: TodoState) -> None:
+    """校验状态转换是否合法，非法时抛出 InvalidTransition。"""
     if target not in ALLOWED_TRANSITIONS[current]:
         raise InvalidTransition(f"invalid todo transition: {current} -> {target}")

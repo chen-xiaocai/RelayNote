@@ -1,3 +1,5 @@
+"""Codex app-server 进程、v2 JSON-RPC 会话与事件消费管理。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +25,8 @@ SAFE_MCP_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class CodexVersionError(RuntimeError):
-    pass
+    """本机 Codex CLI 版本与 RelayNote 要求的版本不一致。"""
+
 
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
@@ -31,6 +34,8 @@ EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 @dataclass(slots=True)
 class CodexProcess:
+    """包装一个 Codex app-server 子进程及其 JSON-RPC 会话状态。"""
+
     process: asyncio.subprocess.Process
     rpc: JsonRpcConnection
     endpoint: str
@@ -44,6 +49,7 @@ class CodexProcess:
     _message_parts: dict[str, list[str]] = field(default_factory=dict)
 
     async def initialize(self) -> dict[str, Any]:
+        """完成 JSON-RPC initialize 握手并启动事件消费任务。"""
         result = await self.rpc.request(
             "initialize",
             {
@@ -56,6 +62,7 @@ class CodexProcess:
         return result
 
     async def start_thread(self, cwd: Path) -> str:
+        """为待办启动一个新的 Codex thread，返回 thread id。"""
         result = await self.rpc.request(
             "thread/start",
             {
@@ -71,6 +78,7 @@ class CodexProcess:
         return self.thread_id
 
     async def resume_thread(self, thread_id: str, cwd: Path | None = None) -> str:
+        """恢复已有 thread，并读取当前活动 turn 作为上下文。"""
         params: dict[str, Any] = {
             "threadId": thread_id,
             "sandbox": "danger-full-access",
@@ -88,6 +96,7 @@ class CodexProcess:
         return self.thread_id
 
     async def start_turn(self, text: str) -> str:
+        """在当前 thread 中启动一轮处理，返回 turn id。"""
         if self.thread_id is None:
             raise RuntimeError("thread is not started")
         result = await self.rpc.request(
@@ -103,6 +112,7 @@ class CodexProcess:
         return self.turn_id
 
     async def steer(self, text: str, expected_turn_id: str | None = None) -> str:
+        """向运行中的 turn 注入新指令并返回最新 turn id。"""
         thread_id = self.thread_id
         turn_id = expected_turn_id or self.turn_id
         if thread_id is None or turn_id is None:
@@ -118,6 +128,7 @@ class CodexProcess:
         return result["turnId"]
 
     async def interrupt(self, turn_id: str | None = None) -> None:
+        """请求 Codex 立即中断当前 turn。"""
         thread_id = self.thread_id
         target = turn_id or self.turn_id
         if thread_id is None or target is None:
@@ -125,6 +136,7 @@ class CodexProcess:
         await self.rpc.request("turn/interrupt", {"threadId": thread_id, "turnId": target})
 
     async def stop_gracefully(self, timeout: float = 30) -> bool:
+        """先要求 Codex 安全收尾；超时后再强制中断。"""
         target = self.turn_id
         if target is None:
             return True
@@ -138,6 +150,7 @@ class CodexProcess:
             return False
 
     async def wait_turn(self, turn_id: str | None = None) -> dict[str, Any]:
+        """等待指定 turn 完成，返回 thread、turn 和最终消息。"""
         target = turn_id or self.turn_id
         if target is None:
             raise RuntimeError("there is no active turn")
@@ -145,6 +158,7 @@ class CodexProcess:
         return {"thread_id": self.thread_id, "turn_id": target, "final_message": self.final_message}
 
     async def close(self, terminate: bool = True) -> None:
+        """关闭 RPC、取消后台任务，并在需要时终止子进程。"""
         await self.rpc.close()
         if self._events_task is not None and not self._events_task.done():
             self._events_task.cancel()
@@ -160,15 +174,18 @@ class CodexProcess:
                 task.cancel()
 
     async def _consume_events(self) -> None:
+        """消费服务端事件，更新 turn 状态并组装最终 agent 消息。"""
         async for message in self.rpc.messages():
             method = message.get("method")
             params = message.get("params") or {}
             if method == "turn/started":
+                # turn 可能由服务端自行启动，因此事件也要登记完成事件。
                 turn = params.get("turn") or {}
                 self.turn_id = turn.get("id", self.turn_id)
                 if self.turn_id:
                     self._turn_finished.setdefault(self.turn_id, asyncio.Event())
             elif method == "item/agentMessage/delta":
+                # 消息分片先暂存，等 item 完成时再拼成完整文本。
                 item_id = params.get("itemId")
                 if item_id:
                     self._message_parts.setdefault(item_id, []).append(params.get("delta", ""))
@@ -179,6 +196,7 @@ class CodexProcess:
                     if text:
                         self.final_message = text
             elif method == "turn/completed":
+                # 设置完成事件，唤醒等待该 turn 的调用方。
                 turn = params.get("turn") or {}
                 completed_id = turn.get("id") or self.turn_id
                 if completed_id:
@@ -187,6 +205,7 @@ class CodexProcess:
                 await self.event_handler(message)
 
     async def drain_process_stream(self, name: str, stream: asyncio.StreamReader) -> None:
+        """把子进程 stdout/stderr 原样转发为事件，供日志与诊断使用。"""
         while chunk := await stream.readline():
             if self.event_handler is not None:
                 await self.event_handler(
@@ -195,6 +214,7 @@ class CodexProcess:
 
 
 async def codex_version(path: Path) -> str:
+    """运行 codex --version 并返回版本字符串。"""
     process = await asyncio.create_subprocess_exec(
         str(path), "--version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
@@ -205,6 +225,7 @@ async def codex_version(path: Path) -> str:
 
 
 async def _configured_mcp_names(codex: Path, env: dict[str, str]) -> list[str]:
+    """查询 Codex 已配置的 MCP server 名称，稍后统一禁用。"""
     process = await asyncio.create_subprocess_exec(
         str(codex), "mcp", "list", "--json",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
@@ -221,6 +242,7 @@ async def _configured_mcp_names(codex: Path, env: dict[str, str]) -> list[str]:
 
 
 def _loopback_port() -> int:
+    """绑定临时端口获取空闲 loopback 端口号。"""
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     probe.bind(("127.0.0.1", 0))
     port = probe.getsockname()[1]
@@ -229,6 +251,7 @@ def _loopback_port() -> int:
 
 
 async def _connect(endpoint: str, socket_path: Path | None = None) -> JsonRpcWebSocket:
+    """按端点类型连接 Unix socket 或 loopback WebSocket。"""
     if socket_path is not None:
         websocket = await websockets.unix_connect(str(socket_path), uri="ws://localhost", proxy=None, max_size=None)
     else:
@@ -245,6 +268,7 @@ async def spawn_app_server(
     event_handler: EventHandler | None = None,
     prefer_unix: bool = True,
 ) -> CodexProcess:
+    """启动一个与待办绑定的 Codex app-server，并完成初始化握手。"""
     runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     cwd = validate_cwd(runtime_dir)
     codex = settings.codex_path
@@ -260,6 +284,7 @@ async def spawn_app_server(
 
     env = os.environ.copy()
     env.update(settings.network_env())
+    # 待办和 run 标识通过环境变量传入 Ask MCP，socket 只允许本机连接。
     env.update(
         {
             "RELAYNOTE_TODO_ID": todo_id,
@@ -290,6 +315,7 @@ async def spawn_app_server(
 
     socket_path: Path | None
     if prefer_unix:
+        # Unix socket 路径短、更安全；Linux/macOS 上优先使用。
         socket_path = safe_unix_socket_path(cwd / "codex.sock", f"codex-{run_id}")
         try:
             socket_path.unlink()
@@ -297,6 +323,7 @@ async def spawn_app_server(
             pass
         endpoint = f"unix://{socket_path}"
     else:
+        # loopback WebSocket 作为兼容备选，端口随机选择。
         socket_path = None
         endpoint = f"ws://127.0.0.1:{_loopback_port()}"
     process = await asyncio.create_subprocess_exec(
@@ -312,6 +339,7 @@ async def spawn_app_server(
             break
         except (OSError, TimeoutError, websockets.exceptions.WebSocketException):
             if process.returncode is not None:
+                # 进程提前退出时把完整输出作为错误返回，方便定位启动失败原因。
                 stdout = await process.stdout.read() if process.stdout else b""
                 stderr = await process.stderr.read() if process.stderr else b""
                 raise RuntimeError(json.dumps({"stdout": stdout.decode(errors="replace"), "stderr": stderr.decode(errors="replace")}, ensure_ascii=False))
@@ -320,16 +348,19 @@ async def spawn_app_server(
         process.terminate()
         await process.wait()
         if prefer_unix:
+            # Unix 连接超时可能是平台限制，回退到 loopback 再试一次。
             return await spawn_app_server(settings, runtime_dir, todo_id, run_id, ask_token, event_handler, prefer_unix=False)
         raise TimeoutError("Codex app-server endpoint was not ready")
     instance = CodexProcess(process, rpc, endpoint, event_handler)
     if process.stdout is not None:
+        # 后台消费子进程输出，避免管道缓冲区占满阻塞 Codex。
         instance._stream_tasks.append(asyncio.create_task(instance.drain_process_stream("stdout", process.stdout)))
     if process.stderr is not None:
         instance._stream_tasks.append(asyncio.create_task(instance.drain_process_stream("stderr", process.stderr)))
     try:
         await instance.initialize()
     except BaseException:
+        # 握手失败时清理已启动的进程和 socket，不留孤儿进程。
         await instance.close()
         raise
     return instance

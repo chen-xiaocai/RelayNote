@@ -1,3 +1,5 @@
+"""macOS 菜单栏应用：状态栏图标、待办弹窗、问题面板与异步运行时。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +13,7 @@ from .model import AUTO_SLOT_STATES, TodoState
 
 
 def run_app(settings: Settings) -> None:
+    """启动 AppKit 应用：创建后台循环、菜单栏代理并进入主事件循环。"""
     import AppKit
     import Foundation
     import objc
@@ -18,27 +21,35 @@ def run_app(settings: Settings) -> None:
     from .runtime import Runtime
 
     class AsyncLoop:
+        """在独立线程中运行 asyncio 事件循环，供 AppKit 主线程提交协程。"""
+
         def __init__(self) -> None:
             self.loop = asyncio.new_event_loop()
             self.thread = threading.Thread(target=self._run, name="RelayNoteRuntime", daemon=True)
             self.thread.start()
 
         def _run(self) -> None:
+            """线程入口，持续运行事件循环直到 stop 被调用。"""
             asyncio.set_event_loop(self.loop)
             self.loop.run_forever()
 
         def submit(self, coroutine: Any) -> Future[Any]:
+            """把协程调度到后台事件循环并返回 Future。"""
             return asyncio.run_coroutine_threadsafe(coroutine, self.loop)
 
         def stop(self) -> None:
+            """停止事件循环并等待后台线程退出。"""
             self.loop.call_soon_threadsafe(self.loop.stop)
             self.thread.join(timeout=5)
 
     class PanelPresenter(Presenter):
+        """把 Question 交给主线程展示，并把面板答案带回异步 Future。"""
+
         def __init__(self, delegate: Any) -> None:
             self.delegate = delegate
 
         async def show(self, question: Question) -> Answer:
+            """在主线程弹窗展示问题，等待用户作答后返回。"""
             loop = asyncio.get_running_loop()
             future: asyncio.Future[Answer] = loop.create_future()
             payload = {"question": question, "future": future, "loop": loop}
@@ -49,9 +60,12 @@ def run_app(settings: Settings) -> None:
                 self.delegate.performSelectorOnMainThread_withObject_waitUntilDone_("dismissQuestion:", question.id, False)
 
     class Delegate(AppKit.NSObject):
+        """AppKit 应用代理：负责菜单栏 UI、运行时生命周期和问题面板。"""
+
         settings: Settings
 
         def applicationDidFinishLaunching_(self, notification: Any) -> None:
+            """应用启动后创建后台运行时、状态栏项和待办弹窗。"""
             self.loop_thread = AsyncLoop()
             self.presenter = PanelPresenter(self)
             self.runtime = Runtime(self.settings, self.presenter, self._schedule_refresh)
@@ -65,6 +79,7 @@ def run_app(settings: Settings) -> None:
             self.refreshUI_(None)
 
         def applicationWillTerminate_(self, notification: Any) -> None:
+            """退出前关闭运行时，并限制等待时间避免卡住应用终止。"""
             try:
                 self.loop_thread.submit(self.runtime.close()).result(timeout=40)
             finally:
@@ -72,10 +87,12 @@ def run_app(settings: Settings) -> None:
 
         @objc.python_method
         def _schedule_refresh(self) -> None:
+            """把刷新动作安全地调度回 AppKit 主线程。"""
             self.performSelectorOnMainThread_withObject_waitUntilDone_("refreshUI:", None, False)
 
         @objc.python_method
         def _build_status_item(self) -> None:
+            """创建菜单栏状态项和点击切换弹窗的按钮。"""
             self.status_item = AppKit.NSStatusBar.systemStatusBar().statusItemWithLength_(AppKit.NSVariableStatusItemLength)
             button = self.status_item.button()
             button.setTitle_("✓")
@@ -85,6 +102,7 @@ def run_app(settings: Settings) -> None:
 
         @objc.python_method
         def _build_popover(self) -> None:
+            """创建承载待办列表的 NSPopover 与根视图。"""
             self.popover = AppKit.NSPopover.alloc().init()
             self.popover.setBehavior_(AppKit.NSPopoverBehaviorTransient)
             controller = AppKit.NSViewController.alloc().init()
@@ -96,11 +114,13 @@ def run_app(settings: Settings) -> None:
 
         @objc.python_method
         def _clear_root(self) -> None:
+            """移除根视图上的全部子视图，准备重新渲染。"""
             for view in list(self.root_view.subviews()):
                 view.removeFromSuperview()
 
         @objc.python_method
         def _label(self, text: str, frame: Any, size: float = 13, bold: bool = False) -> Any:
+            """创建可换行的 NSTextField 标签。"""
             label = AppKit.NSTextField.labelWithString_(text)
             label.setFrame_(frame)
             label.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
@@ -110,6 +130,7 @@ def run_app(settings: Settings) -> None:
 
         @objc.python_method
         def _button(self, title: str, action: str, frame: Any) -> Any:
+            """创建绑定到 Delegate 方法的圆角按钮。"""
             button = AppKit.NSButton.alloc().initWithFrame_(frame)
             button.setTitle_(title)
             button.setBezelStyle_(AppKit.NSBezelStyleRounded)
@@ -119,6 +140,7 @@ def run_app(settings: Settings) -> None:
 
         @objc.python_method
         def _show_list(self) -> None:
+            """渲染待办列表：诊断提示、滚动表格和新建/退出按钮。"""
             self._clear_root()
             self.detail_mode = False
             self.root_view.addSubview_(self._label("RelayNote", Foundation.NSMakeRect(18, 520, 280, 28), 20, True))
@@ -150,6 +172,7 @@ def run_app(settings: Settings) -> None:
             table.reloadData()
 
         def togglePopover_(self, sender: Any) -> None:
+            """点击状态栏图标时切换弹窗显示状态。"""
             if self.popover.isShown():
                 self.popover.performClose_(sender)
             else:
@@ -157,6 +180,7 @@ def run_app(settings: Settings) -> None:
                 self.popover.showRelativeToRect_ofView_preferredEdge_(sender.bounds(), sender, AppKit.NSRectEdgeMinY)
 
         def refreshUI_(self, sender: Any) -> None:
+            """重新读取待办并刷新当前列表或详情界面。"""
             if not hasattr(self, "runtime"):
                 return
             self.todos = self.runtime.store.list_todos()
@@ -170,9 +194,11 @@ def run_app(settings: Settings) -> None:
                 self.table.reloadData()
 
         def numberOfRowsInTableView_(self, table: Any) -> int:
+            """NSTableView 数据源：返回待办行数。"""
             return len(self.todos)
 
         def tableView_viewForTableColumn_row_(self, table: Any, column: Any, row: int) -> Any:
+            """渲染每行待办的标题、状态和最近进度。"""
             todo = self.todos[row]
             cell = AppKit.NSTableCellView.alloc().initWithFrame_(Foundation.NSMakeRect(0, 0, 398, 64))
             title = todo.title
@@ -183,6 +209,7 @@ def run_app(settings: Settings) -> None:
             return cell
 
         def tableView_writeRowsWithIndexes_toPasteboard_(self, table: Any, indexes: Any, pasteboard: Any) -> bool:
+            """允许拖动可移动待办；自动任务保持固定置顶。"""
             row = indexes.firstIndex()
             if row == Foundation.NSNotFound or self.todos[row].state in AUTO_SLOT_STATES:
                 return False
@@ -191,9 +218,11 @@ def run_app(settings: Settings) -> None:
             return True
 
         def tableView_validateDrop_proposedRow_proposedDropOperation_(self, table: Any, info: Any, row: int, operation: int) -> int:
+            """始终接受拖动操作，便于统一处理目标位置。"""
             return AppKit.NSDragOperationMove
 
         def tableView_acceptDrop_row_dropOperation_(self, table: Any, info: Any, row: int, operation: int) -> bool:
+            """把拖动的待办插入新位置并持久化排序。"""
             todo_id = info.draggingPasteboard().stringForType_("dev.relaynote.todo")
             movable = [todo for todo in self.todos if todo.state not in AUTO_SLOT_STATES]
             source = next((index for index, todo in enumerate(movable) if todo.id == todo_id), None)
@@ -211,6 +240,7 @@ def run_app(settings: Settings) -> None:
             return True
 
         def openSelected_(self, sender: Any) -> None:
+            """打开用户点击或选中的待办详情。"""
             row = self.table.clickedRow()
             if row < 0:
                 row = self.table.selectedRow()
@@ -219,6 +249,7 @@ def run_app(settings: Settings) -> None:
                 self._show_detail(self.selected_id)
 
         def addTodo_(self, sender: Any) -> None:
+            """弹出新建待办对话框，输入有效时创建待办。"""
             alert = AppKit.NSAlert.alloc().init()
             alert.setMessageText_("新建待办")
             alert.setInformativeText_("写一句简洁描述即可，细节可以稍后追加。")
@@ -231,10 +262,12 @@ def run_app(settings: Settings) -> None:
                 self.refreshUI_(None)
 
         def quitApp_(self, sender: Any) -> None:
+            """终止 NSApplication 并触发退出清理。"""
             AppKit.NSApplication.sharedApplication().terminate_(sender)
 
         @objc.python_method
         def _show_detail(self, todo_id: str) -> None:
+            """渲染待办详情：时间线、Codex 事件和可用操作按钮。"""
             todo = self.runtime.store.get_todo(todo_id)
             self._clear_root()
             self.detail_mode = True
@@ -286,47 +319,57 @@ def run_app(settings: Settings) -> None:
                 self.root_view.addSubview_(self._button("重试", "retryTodo:", Foundation.NSMakeRect(x, 62, 82, 34)))
 
         def backToList_(self, sender: Any) -> None:
+            """返回待办列表并刷新。"""
             self.selected_id = None
             self._show_list()
             self.refreshUI_(None)
 
         def appendTodo_(self, sender: Any) -> None:
+            """把追加框中的文本提交给运行时。"""
             body = self.append_field.stringValue()
             if body.strip():
                 self._submit(self.runtime.append(self.selected_id, body))
                 self.append_field.setStringValue_("")
 
         def suspendTodo_(self, sender: Any) -> None:
+            """挂起当前详情中的待办。"""
             self._submit(self.runtime.suspend(self.selected_id))
 
         def takeoverTodo_(self, sender: Any) -> None:
+            """接管当前详情中的待办。"""
             self._submit(self.runtime.takeover(self.selected_id))
 
         def resetTodo_(self, sender: Any) -> None:
+            """把已完成待办退回待完成状态。"""
             self.runtime.reset_completed(self.selected_id)
 
         def archiveTodo_(self, sender: Any) -> None:
+            """归档已完成待办并返回列表。"""
             self.runtime.archive(self.selected_id)
             self.backToList_(sender)
 
         def completeClaimed_(self, sender: Any) -> None:
+            """完成已接管待办并立即归档。"""
             todo = self.runtime.store.get_todo(self.selected_id)
             completed = self.runtime.store.transition(todo.id, TodoState.COMPLETED, todo.version)
             self.runtime.archive(completed.id)
             self.backToList_(sender)
 
         def retryTodo_(self, sender: Any) -> None:
+            """重试异常状态的待办。"""
             self._submit(self.runtime.retry_error(self.selected_id))
 
         @objc.python_method
         def _submit(self, coroutine: Any) -> None:
+            """把协程提交到后台循环，完成后回到主线程处理。"""
             future = self.loop_thread.submit(coroutine)
             future.add_done_callback(lambda result: self.performSelectorOnMainThread_withObject_waitUntilDone_("asyncFinished:", result, False))
 
         def asyncFinished_(self, future: Future[Any]) -> None:
+            """后台任务结束回调：失败时弹窗，成功后刷新 UI。"""
             try:
                 future.result()
-            except Exception as error:  # noqa: BLE001 - surface background operation failures in the UI
+            except Exception as error:  # noqa: BLE001 - 在 UI 中展示后台操作失败
                 alert = AppKit.NSAlert.alloc().init()
                 alert.setMessageText_("RelayNote 操作失败")
                 alert.setInformativeText_(str(error))
@@ -334,6 +377,7 @@ def run_app(settings: Settings) -> None:
             self.refreshUI_(None)
 
         def presentQuestion_(self, payload: dict[str, Any]) -> None:
+            """在主线程创建并显示问题面板。"""
             question = payload["question"]
             self.question_payload = payload
             panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -371,6 +415,7 @@ def run_app(settings: Settings) -> None:
             self.question_panel = panel
 
         def dismissQuestion_(self, question_id: str) -> None:
+            """关闭与当前问题匹配的面板。"""
             payload = self.question_payload
             if payload and payload["question"].id == question_id:
                 if self.question_panel:
@@ -379,15 +424,18 @@ def run_app(settings: Settings) -> None:
                 self.question_payload = None
 
         def answerOption_(self, sender: Any) -> None:
+            """用户点击推荐/选项按钮时提交对应 Answer。"""
             self._answer_panel(Answer(sender.tag(), None, False))
 
         def answerOther_(self, sender: Any) -> None:
+            """用户填写其他回答时提交自由文本。"""
             value = self.other_field.stringValue()
             if value.strip():
                 self._answer_panel(Answer(None, value, False))
 
         @objc.python_method
         def _answer_panel(self, answer: Answer) -> None:
+            """把面板答案写回等待中的异步 Future 并关闭面板。"""
             payload = self.question_payload
             if payload is None:
                 return

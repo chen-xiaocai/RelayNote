@@ -1,3 +1,5 @@
+"""Ask socket 桥、MCP 兜底与问题超时持久化的测试。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,11 +12,14 @@ from relaynote.db import Store
 
 
 class ImmediatePresenter:
+    """始终立即返回自由文本回答的测试展示器。"""
+
     async def show(self, question: Question) -> Answer:
         return Answer(None, "完整的其他回答", False)
 
 
 async def test_authenticated_ask_socket_roundtrip(tmp_path: Path) -> None:
+    """验证带 token 的 Ask socket 能完整往返并持久化回答。"""
     store = Store(tmp_path / "db.sqlite3")
     todo = store.create_todo("任务")
     broker = QuestionBroker(ImmediatePresenter(), store=store)
@@ -38,6 +43,7 @@ async def test_authenticated_ask_socket_roundtrip(tmp_path: Path) -> None:
 
 
 async def test_mcp_bridge_falls_back_to_recommended_when_broker_is_unavailable(monkeypatch, tmp_path: Path) -> None:
+    """验证桥不可用时 MCP 返回推荐项而不是抛错阻塞 Codex。"""
     monkeypatch.setenv("RELAYNOTE_ASK_SOCKET", str(tmp_path / "missing.sock"))
     monkeypatch.setenv("RELAYNOTE_ASK_TOKEN", "token")
     answer = await broker_call(
@@ -48,7 +54,10 @@ async def test_mcp_bridge_falls_back_to_recommended_when_broker_is_unavailable(m
 
 
 async def test_timeout_is_measured_after_display_and_persisted(tmp_path: Path) -> None:
+    """验证超时从展示后开始计算，并持久化展示时间和截止时间。"""
     class NeverPresenter:
+        """永不返回答案的测试展示器。"""
+
         async def show(self, question: Question) -> Answer:
             await asyncio.Future()
 

@@ -5,8 +5,8 @@ description = "A local-first macOS menu bar todo orchestrator for Codex"
 requires-python = ">=3.12"
 license = {text = "MIT"}
 dependencies = [
-    # cryptography 49+ dropped Intel macOS wheels; 48.0.1 ships universal2
-    # with bundled OpenSSL, avoiding Homebrew libcrypto in py2app builds.
+    # cryptography 49+ 不再提供 Intel macOS wheel；48.0.1 自带 universal2
+    # 和 OpenSSL，可避免 py2app 构建依赖 Homebrew libcrypto。
     "cryptography<49",
     "mcp[cli]>=2.0.0",
     "openai>=2.52.0",
@@ -31,8 +31,8 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [dependency-groups]
-# setuptools 71+ moved pkg_resources dependencies to top-level jaraco.text,
-# which py2app 0.28.8 cannot bundle correctly.
+# setuptools 71+ 把 pkg_resources 依赖移到了顶层 jaraco.text，
+# py2app 0.28.8 无法正确打包这些依赖。
 build = [
     "setuptools<71",
 ]

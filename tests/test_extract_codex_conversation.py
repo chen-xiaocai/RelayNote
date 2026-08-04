@@ -1,4 +1,4 @@
-"""Tests for extracting user and Codex messages from a session."""
+"""从 Codex session 中提取用户与 Codex 文本消息的测试。"""
 
 from __future__ import annotations
 
@@ -11,9 +11,12 @@ from samples.extract_codex_conversation import extract_conversation
 
 
 class ExtractConversationTest(unittest.TestCase):
+    """extract_conversation 单元测试。"""
+
     SESSION_ID = "019fbc1b-61f9-7470-b7ac-8504979ee3ec"
 
     def test_extracts_messages_and_excludes_tools_and_event_mirrors(self) -> None:
+        """验证只保留真实用户消息和助手文本，排除工具记录。"""
         records = [
             {
                 "timestamp": "2026-08-01T00:59:59Z",
@@ -70,6 +73,7 @@ class ExtractConversationTest(unittest.TestCase):
 
     @staticmethod
     def _message(timestamp: str, role: str, content_type: str, text: str) -> dict:
+        """构造一条 response_item 消息记录。"""
         return {
             "timestamp": timestamp,
             "type": "response_item",

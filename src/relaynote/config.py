@@ -1,3 +1,5 @@
+"""环境配置、默认路径与网络代理设置。"""
+
 from __future__ import annotations
 
 import os
@@ -11,6 +13,8 @@ from .ipc import safe_unix_socket_path
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    """RelayNote 运行时配置，全部来自环境变量或默认值。"""
+
     data_dir: Path
     managed_root: Path
     codex_path: Path
@@ -21,6 +25,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        """从环境变量构造配置，并解析默认的 Codex 与 Ask MCP 可执行文件。"""
         data = Path(os.environ.get("RELAYNOTE_DATA_DIR", "~/Library/Application Support/RelayNote")).expanduser()
         managed = Path(os.environ.get("RELAYNOTE_WORKSPACES", "~/RelayNote/Workspaces")).expanduser()
         configured = os.environ.get("RELAYNOTE_CODEX_PATH")
@@ -40,17 +45,21 @@ class Settings:
 
     @property
     def database_path(self) -> Path:
+        """返回 SQLite 数据库文件的完整路径。"""
         return self.data_dir / "relaynote.sqlite3"
 
     @property
     def runtime_dir(self) -> Path:
+        """返回保存运行期临时文件与 Codex 会话文件的目录。"""
         return self.data_dir / "runtime"
 
     @property
     def ask_socket(self) -> Path:
+        """返回 Ask MCP 本地 Unix socket 路径，并保证路径长度可被系统接受。"""
         return safe_unix_socket_path(self.runtime_dir / "ask.sock", "ask")
 
     def network_env(self) -> dict[str, str]:
+        """返回子进程使用的代理环境变量，本地回环地址不经过代理。"""
         return {
             "HTTP_PROXY": self.proxy_url,
             "HTTPS_PROXY": self.proxy_url,

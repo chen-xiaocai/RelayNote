@@ -1,4 +1,4 @@
-"""Extract user and Codex text messages from a local Codex session."""
+"""从本地 Codex session 中提取用户与 Codex 的文本消息。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from uuid import UUID
 
 
 class ConversationMessage(TypedDict):
-    """A user or Codex message stored in a session."""
+    """session 中保存的一条用户或 Codex 消息。"""
 
     timestamp: str
     role: Literal["user", "assistant"]
@@ -18,6 +18,7 @@ class ConversationMessage(TypedDict):
 
 
 def _find_session_file(session_id: str, sessions_dir: Path | None) -> Path:
+    """根据 UUID 递归查找唯一 session 文件。"""
     normalized_id = str(UUID(session_id))
     root = sessions_dir or Path.home() / ".codex" / "sessions"
     matches = list(root.glob(f"**/*{normalized_id}.jsonl"))
@@ -25,6 +26,7 @@ def _find_session_file(session_id: str, sessions_dir: Path | None) -> Path:
     if not matches:
         raise FileNotFoundError(f"Codex session not found: {normalized_id}")
     if len(matches) > 1:
+        # 找到多个文件时列出全部路径，便于用户判断归属。
         paths = "\n".join(str(path) for path in matches)
         raise RuntimeError(
             f"Multiple Codex session files found for {normalized_id}:\n{paths}"
@@ -36,12 +38,7 @@ def extract_conversation(
     session_id: str,
     sessions_dir: Path | None = None,
 ) -> list[ConversationMessage]:
-    """Return user and assistant text messages in session-file order.
-
-    User-authored input is read from ``user_message`` events so injected user-role
-    context is excluded. Assistant text is read from canonical ``response_item``
-    messages. Reasoning records, tool calls, and tool results are excluded.
-    """
+    """按文件顺序提取用户与助手文本；工具调用、推理和事件镜像会被排除。"""
     session_file = _find_session_file(session_id, sessions_dir)
     messages: list[ConversationMessage] = []
 
@@ -66,6 +63,7 @@ def extract_conversation(
                 continue
 
             if event.get("type") == "event_msg" and payload.get("type") == "user_message":
+                # 用户真实输入来自 user_message 事件，排除被注入的 user-role 上下文。
                 text = payload.get("message")
                 if isinstance(text, str):
                     messages.append(
@@ -78,6 +76,7 @@ def extract_conversation(
                 or payload.get("type") != "message"
                 or payload.get("role") != "assistant"
             ):
+                # 只保留规范的 assistant message，跳过工具调用和工具结果。
                 continue
 
             content = payload.get("content")
@@ -105,6 +104,7 @@ def extract_conversation(
 
 
 def parse_args() -> argparse.Namespace:
+    """解析命令行参数。"""
     parser = argparse.ArgumentParser(
         description="Extract user and Codex text messages from a session."
     )
@@ -118,6 +118,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """命令行入口：读取 session 并以 JSON 输出对话。"""
     args = parse_args()
     messages = extract_conversation(args.session_id, args.sessions_dir)
     print(json.dumps(messages, ensure_ascii=False, indent=2))
