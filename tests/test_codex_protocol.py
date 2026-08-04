@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from relaynote.codex import CodexProcess
+from relaynote.codex import CodexProcess, spawn_app_server
+from relaynote.config import Settings
 
 
 class FakeProcess:
@@ -54,6 +55,21 @@ class FakeRpc:
         await self.queue.put(None)
 
 
+class FakeSpawnProcess:
+    """spawn_app_server 测试使用的伪子进程。"""
+
+    pid = 123
+    returncode = None
+    stdout = None
+    stderr = None
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    async def wait(self) -> int:
+        return 0
+
+
 async def test_codex_v2_thread_turn_and_complete_message(tmp_path: Path) -> None:
     """验证线程启动、turn 启动、分片消息组装和完成事件。"""
     rpc = FakeRpc()
@@ -77,3 +93,46 @@ async def test_codex_v2_thread_turn_and_complete_message(tmp_path: Path) -> None
     assert rpc.requests[2][0] == "turn/start"
     assert events[-1]["method"] == "turn/completed"
     await process.close(terminate=False)
+
+
+async def test_spawn_app_server_keeps_existing_mcp_and_drops_proxy(monkeypatch, tmp_path: Path) -> None:
+    """验证 Codex 启动命令只禁用 apps，并保留已有 MCP、不注入代理。"""
+    codex = tmp_path / "codex"
+    codex.write_text("", encoding="utf-8")
+    settings = Settings(
+        tmp_path / "data",
+        tmp_path / "workspaces",
+        codex,
+        None,
+        expected_codex_version="codex-cli 0.146.0",
+    )
+    captured = {}
+
+    async def fake_version(path: Path) -> str:
+        return settings.expected_codex_version
+
+    async def fake_connect(endpoint: str, socket_path: Path | None = None):
+        rpc = FakeRpc()
+        rpc.queue.put_nowait(None)
+        return rpc
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeSpawnProcess()
+
+    monkeypatch.setattr("relaynote.codex.codex_version", fake_version)
+    monkeypatch.setattr("relaynote.codex._connect", fake_connect)
+    monkeypatch.setattr("relaynote.codex.asyncio.create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(
+        "relaynote.codex.ask_mcp_command",
+        lambda: ("/fake/ask_mcp", []),
+    )
+    process = await spawn_app_server(settings, tmp_path / "runtime", "todo", "run", "token")
+    await process.close(terminate=False)
+    command = " ".join(str(item) for item in captured["args"])
+    assert "--disable apps" in command
+    assert "--disable plugins" not in command
+    assert "HTTP_PROXY" not in command
+    assert "mcp_servers.tavily.enabled=false" not in command
+    assert "mcp_servers.relaynote_ask.command" in command

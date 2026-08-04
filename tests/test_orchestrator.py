@@ -84,3 +84,31 @@ async def test_tool_calls_are_idempotent_within_a_run(tmp_path: Path) -> None:
     second = await orchestrator._execute_call("run", call)
     assert first == second == {"count": 1}
     assert count == 1
+
+
+async def test_compression_triggers_on_final_exit_usage_only(tmp_path: Path) -> None:
+    """验证只在模型退出响应的 cached+input token 超过阈值时压缩。"""
+    responses = FakeResponses(
+        [
+            {
+                "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]}],
+                "usage": {"input_tokens": 129_000, "cached_input_tokens": 1_000, "output_tokens": 1},
+            },
+            {"output_text": "summary"},
+        ]
+    )
+    client = SimpleNamespace(responses=responses)
+    store = Store(tmp_path / "db.sqlite3")
+    settings = Settings(tmp_path, tmp_path / "work", Path("/bin/false"), "key")
+    orchestrator = Orchestrator(
+        store,
+        settings,
+        JsonlLogger(tmp_path / "events.jsonl"),
+        [],
+        client=client,
+        compaction_threshold=128_000,
+    )
+    await orchestrator.run(datetime.now(UTC))
+    compact, _, _, _ = store.orchestrator_context()
+    assert compact == "summary"
+    assert len(responses.requests) == 2

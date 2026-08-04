@@ -27,12 +27,14 @@ codex 是一个 agent, 负责完成各种任务, 每个待办至多绑定一个 
 - 根据最新快照安排待办，优先级仅作为参考。
 - 总计最多允许一个待办处于 `running`、`waiting_user` 或 `stopping` 状态。
 - `claimed` 表示任务被用户人工接管, 不交给 codex
-- 为一个待办分配 codex 时, 先创建一个工作区, 再为它绑定 codex threat
+- 为一个待办分配 codex 时, 先用 bash 在 `$RELAYNOTE_WORKSPACES` 下 `mkdir -p` 工作目录,
+  再调用 `bind_and_start_codex(todo_id, workspace_dir)`, 只传这两个参数。
 
 ## Tool Usage
 
-- 需要用户选择时调用 `ask_user`。
+- 需要用户选择时调用 `ask_user`，一次调用可提交多个问题；每题 `options` 的第一个选项是推荐项。
 - 'asl_user' 是你与用户沟通的唯一途径, 不只是提问, 告知, 提醒等都使用这个 tool
+- `set_todo_state(todo_id, "suspended")` 会安全停止运行中或等待中的待办。
 - 执行任何改变后，查询最新列表确认结果。
 - 不要假设工具调用成功。
 
@@ -90,7 +92,7 @@ class Orchestrator:
             self.tools = {tool.name: tool for tool in tools}
         self.client = client or AsyncOpenAI(
             api_key=settings.deepseek_api_key or "missing",
-            base_url="https://api.deepseek.com",
+            base_url=settings.deepseek_base_url,
         )
         self.compaction_threshold = compaction_threshold
         self.max_tool_rounds = max_tool_rounds
@@ -135,12 +137,7 @@ class Orchestrator:
         if not self.settings.deepseek_api_key:
             # 未配置 API key 时跳过自动调度。
             return None
-        compact_prompt, history, tokens, through_id = self.store.orchestrator_context()
-        if tokens >= self.compaction_threshold and history:
-            # 历史接近阈值时先压缩，后续只回放压缩总结和压缩后的新记录。
-            compact_prompt = await self._compact(compact_prompt, history)
-            self.store.save_compaction(compact_prompt, through_id, 0)
-            history = []
+        compact_prompt, history, _, _ = self.store.orchestrator_context()
         run_id = str(uuid4())
         base: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         if compact_prompt:
@@ -155,10 +152,10 @@ class Orchestrator:
                 # 最新快照只参与本轮输入，不写入持久历史，避免旧快照误导后续决策。
                 snapshot = {"role": "user", "content": "LATEST_TODO_AND_SESSION_SNAPSHOT\n" + json.dumps(self.snapshot(), ensure_ascii=False, separators=(",", ":"))}
                 input_items = [*base, *current, snapshot]
-                request_record = {"run_id": run_id, "model": "deepseek-v4-flash", "input": input_items, "tools": self._tool_specs(), "reasoning": {"effort": "high"}}
+                request_record = {"run_id": run_id, "model": self.settings.deepseek_model, "input": input_items, "tools": self._tool_specs(), "reasoning": {"effort": "high"}}
                 self.logger.write("deepseek_request", request_record)
                 response = await self.client.responses.create(
-                    model="deepseek-v4-flash",
+                    model=self.settings.deepseek_model,
                     input=input_items,
                     tools=self._tool_specs(),
                     reasoning={"effort": "high"},
@@ -174,7 +171,13 @@ class Orchestrator:
                 self.store.append_orchestrator_items(run_id, output, int(usage.get("total_tokens") or 0))
                 calls = [item for item in output if item.get("type") == "function_call"]
                 if not calls:
-                    # 模型不再调用工具时结束本轮循环。
+                    # 只在模型退出时检查最后一次响应的输入 token，超过阈值才压缩。
+                    input_tokens = int(usage.get("input_tokens") or 0)
+                    cached_tokens = int(usage.get("cached_input_tokens") or usage.get("cached_tokens") or 0)
+                    if input_tokens + cached_tokens > self.compaction_threshold:
+                        _, current_history, _, through_id = self.store.orchestrator_context()
+                        compact_prompt = await self._compact(compact_prompt, current_history)
+                        self.store.save_compaction(compact_prompt, through_id, 0)
                     break
                 call_outputs = []
                 for call in calls:
@@ -238,7 +241,7 @@ class Orchestrator:
         if previous:
             content.append({"role": "system", "content": previous})
         content.extend(history)
-        response = await self.client.responses.create(model="deepseek-v4-flash", input=content)
+        response = await self.client.responses.create(model=self.settings.deepseek_model, input=content)
         raw = response.model_dump() if hasattr(response, "model_dump") else response
         self.logger.write("deepseek_compaction", raw)
         text = raw.get("output_text")

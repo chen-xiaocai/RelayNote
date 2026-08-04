@@ -31,13 +31,13 @@ AUTO_SLOT_STATES = frozenset(
 )
 
 ALLOWED_TRANSITIONS: dict[TodoState, frozenset[TodoState]] = {
-    TodoState.PENDING: frozenset({TodoState.RUNNING, TodoState.SUSPENDED, TodoState.TAKEN_OVER}),
+    TodoState.PENDING: frozenset({TodoState.RUNNING, TodoState.SUSPENDED, TodoState.COMPLETED, TodoState.ARCHIVED, TodoState.TAKEN_OVER}),
     TodoState.RUNNING: frozenset({TodoState.WAITING, TodoState.STOPPING, TodoState.COMPLETED, TodoState.ERROR, TodoState.TAKEN_OVER}),
-    TodoState.WAITING: frozenset({TodoState.RUNNING, TodoState.STOPPING, TodoState.ERROR, TodoState.TAKEN_OVER}),
-    TodoState.STOPPING: frozenset({TodoState.SUSPENDED, TodoState.ERROR, TodoState.TAKEN_OVER}),
-    TodoState.SUSPENDED: frozenset({TodoState.PENDING, TodoState.TAKEN_OVER}),
+    TodoState.WAITING: frozenset({TodoState.RUNNING, TodoState.STOPPING, TodoState.COMPLETED, TodoState.ERROR, TodoState.TAKEN_OVER}),
+    TodoState.STOPPING: frozenset({TodoState.SUSPENDED, TodoState.COMPLETED, TodoState.ARCHIVED, TodoState.ERROR, TodoState.TAKEN_OVER}),
+    TodoState.SUSPENDED: frozenset({TodoState.PENDING, TodoState.COMPLETED, TodoState.ARCHIVED, TodoState.TAKEN_OVER}),
     TodoState.COMPLETED: frozenset({TodoState.PENDING, TodoState.ARCHIVED, TodoState.TAKEN_OVER}),
-    TodoState.ERROR: frozenset({TodoState.PENDING, TodoState.SUSPENDED, TodoState.TAKEN_OVER}),
+    TodoState.ERROR: frozenset({TodoState.PENDING, TodoState.SUSPENDED, TodoState.COMPLETED, TodoState.ARCHIVED, TodoState.TAKEN_OVER}),
     TodoState.TAKEN_OVER: frozenset({TodoState.COMPLETED, TodoState.ARCHIVED}),
     TodoState.ARCHIVED: frozenset(),
 }
@@ -71,6 +71,7 @@ class Todo:
     version: int
     latest_detail: str | None
     workspace: str | None
+    pending_action: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

@@ -20,7 +20,7 @@ class Option:
     """展示给用户的一个选项，包含标题和说明。"""
 
     label: str
-    description: str
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +54,8 @@ class Question:
             raise ValueError("a question requires 1-3 options")
         if self.recommended not in range(len(self.options)):
             raise ValueError("recommended option is out of range")
-        if any(not option.label.strip() or not option.description.strip() for option in self.options):
-            raise ValueError("option label and description cannot be empty")
+        if any(not option.label.strip() for option in self.options):
+            raise ValueError("option label cannot be empty")
 
 
 class Presenter(Protocol):
@@ -189,16 +189,20 @@ class AskBrokerServer:
                 response: dict[str, Any] = {"error": "unauthorized"}
             else:
                 arguments = request.get("arguments") or {}
-                options = tuple(Option(item["label"], item["description"]) for item in arguments.get("options", []))
-                question = Question(
-                    prompt=arguments.get("question", ""),
-                    options=options,
-                    recommended=arguments.get("recommended", -1),
-                    todo_id=request.get("todo_id"),
-                    run_id=request.get("run_id"),
-                )
-                answer = await self.broker.ask(question)
-                response = {"option": answer.option, "other": answer.other, "timed_out": answer.timed_out}
+                questions = arguments.get("questions")
+                answers = []
+                for item in questions or []:
+                    options = tuple(Option(option, "") for option in item.get("options", []))
+                    question = Question(
+                        prompt=item.get("question", ""),
+                        options=options,
+                        recommended=0,
+                        todo_id=request.get("todo_id"),
+                        run_id=request.get("run_id"),
+                    )
+                    answer = await self.broker.ask(question)
+                    answers.append({"option": answer.option, "other": answer.other, "timed_out": answer.timed_out})
+                response = {"answers": answers}
         except Exception as error:  # noqa: BLE001 - IPC 必须返回结构化失败
             response = {"error_type": type(error).__name__, "error": str(error)}
         writer.write((json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n").encode())

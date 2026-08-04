@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 from .ask import ConsolePresenter
 from .codex import codex_version
@@ -24,8 +25,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--append", nargs=2, metavar=("TODO_ID", "TEXT"))  # 给指定待办追加笔记，参数为待办 ID 和追加文本。
     parser.add_argument("--state", nargs=2, metavar=("TODO_ID", "STATE"))  # 将指定待办切换到目标状态，参数为待办 ID 和目标状态。
     parser.add_argument("--start", metavar="TODO_ID")  # 启动一条待办，参数为待办 ID。
-    parser.add_argument("--project")  # 指定 --start 使用的 Git 项目路径，不传时创建独立工作区。
-    parser.add_argument("--dirty-policy", choices=["suspend", "head", "original"], default="suspend")  # 项目有未提交改动时的策略：suspend 中止等待选择，head 基于 HEAD 建 worktree，original 直接用原目录。
+    parser.add_argument("--workspace-dir")  # 指定 --start 使用的工作目录；不传时使用待办已记录目录。
     parser.add_argument("--run-tick", action="store_true")  # 手动推进一次调度器 tick。
     parser.add_argument("--doctor", action="store_true")  # 输出环境诊断信息，便于排查问题。
     return parser
@@ -38,10 +38,26 @@ async def _async_command(settings: Settings, args: argparse.Namespace) -> None:
     runtime = Runtime(settings, ConsolePresenter())
     await runtime.start()
     try:
+        if args.state:
+            # 状态转换统一走 runtime，运行中的待办会先安全停止。
+            todo_id, target = args.state[0], TodoState(args.state[1])
+            if target is TodoState.ARCHIVED:
+                result = await runtime.archive(todo_id)
+            elif target is TodoState.COMPLETED:
+                result = await runtime.complete(todo_id)
+            elif target is TodoState.SUSPENDED:
+                result = await runtime.suspend(todo_id)
+            else:
+                todo = runtime.store.get_todo(todo_id)
+                result = runtime.store.transition(todo.id, target, todo.version)
+            print(json.dumps(result, ensure_ascii=False, default=str))
         if args.start:
             # 启动一条待办，打印运行结果，并等待其第一轮处理完成。
             todo = runtime.store.get_todo(args.start)
-            result = await runtime.start_todo(todo.id, todo.version, args.project, args.dirty_policy)
+            workspace = Path(args.workspace_dir).expanduser() if args.workspace_dir else (Path(todo.workspace) if todo.workspace else None)
+            if workspace is None:
+                raise ValueError("todo has no workspace; pass --workspace-dir")
+            result = await runtime.start_todo(todo.id, workspace)
             print(json.dumps(result, ensure_ascii=False))
             outcome = await runtime.processes[result["run_id"]].wait_turn(result["turn_id"])
             print(json.dumps(outcome, ensure_ascii=False))
@@ -65,11 +81,6 @@ def _console(settings: Settings, args: argparse.Namespace) -> None:
     if args.append:
         note = store.append_note(args.append[0], args.append[1])
         print(note.id)
-    if args.state:
-        # 仅在当前版本一致时执行待办状态转换。
-        todo = store.get_todo(args.state[0])
-        updated = store.transition(todo.id, TodoState(args.state[1]), todo.version)
-        print(f"{updated.id}\t{updated.state}\t{updated.version}")
     if args.doctor:
         # 输出环境信息，便于排查问题，无需另行搜索。
         try:
@@ -82,7 +93,9 @@ def _console(settings: Settings, args: argparse.Namespace) -> None:
             "codex_path": str(settings.codex_path),
             "codex_version": version,
             "expected_codex_version": settings.expected_codex_version,
-            "ask_command": str(settings.ask_command) if settings.ask_command else None,
+            "base_url": settings.deepseek_base_url,
+            "model": settings.deepseek_model,
+            "shell_path": str(settings.shell_path) if settings.shell_path else None,
             "deepseek_enabled": settings.deepseek_api_key is not None,
         }
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -94,9 +107,9 @@ def _console(settings: Settings, args: argparse.Namespace) -> None:
 
 def main() -> None:
     """解析 CLI 参数、获取实例锁，并分派命令。"""
-    settings = Settings.from_env()
+    settings = Settings.from_config()
     args = _parser().parse_args()
-    is_async = bool(args.start or args.run_tick)
+    is_async = bool(args.start or args.run_tick or args.state)
     is_console = any((args.add, args.list, args.append, args.state, args.doctor, is_async))
     with InstanceLock(settings.data_dir / "relaynote.lock"):
         if is_async:

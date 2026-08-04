@@ -13,24 +13,27 @@ from mcp.server.stdio import stdio_server
 
 TOOL_SCHEMA = {
     "type": "object",
-    "required": ["question", "options", "recommended"],
+    "required": ["questions"],
     "properties": {
-        "question": {"type": "string", "minLength": 1},
-        "options": {
+        "questions": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 3,
             "items": {
                 "type": "object",
-                "required": ["label", "description"],
-                "additionalProperties": False,
+                "required": ["question", "options"],
                 "properties": {
-                    "label": {"type": "string", "minLength": 1},
-                    "description": {"type": "string", "minLength": 1},
+                    "question": {"type": "string", "minLength": 1},
+                    "options": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "items": {"type": "string", "minLength": 1},
+                    },
                 },
+                "additionalProperties": False,
             },
         },
-        "recommended": {"type": "integer", "minimum": 0, "maximum": 2},
+        "todo_id": {"type": ["string", "null"]},
     },
     "additionalProperties": False,
 }
@@ -40,8 +43,8 @@ async def broker_call(arguments: dict[str, Any], unavailable_timeout: float = 5)
     """通过环境变量定位 Ask socket，调用桥接服务并在失败时返回推荐项兜底。"""
     socket = os.environ.get("RELAYNOTE_ASK_SOCKET")
     token = os.environ.get("RELAYNOTE_ASK_TOKEN")
-    recommended = arguments.get("recommended")
-    fallback = {"option": recommended, "other": None, "timed_out": True}
+    questions = arguments.get("questions") or []
+    fallback = {"answers": [{"option": 0, "other": None, "timed_out": True} for _ in questions]}
     if not socket or not token:
         # 缺少 socket 或 token 时不能阻塞 Codex，直接返回推荐项。
         return fallback
@@ -80,26 +83,24 @@ def create_server() -> Server[Any]:
             tools=[
                 types.Tool(
                     name="ask_user",
-                    description="向 RelayNote 用户提出一个阻塞式问题。每次只问一个问题，必须给 1-3 个选项并指定推荐项；用户也可以输入其他回答。",
+                    description="向 RelayNote 用户提出一个或多个阻塞式问题；每题给 1-3 个字符串选项，第一个选项是推荐项；用户也可以输入其他回答。",
                     inputSchema=TOOL_SCHEMA,
                 )
             ]
         )
 
     async def call_tool(context: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
-        """校验推荐项索引，然后调用本地桥并返回结构化结果。"""
+        """校验问题结构，然后调用本地桥并返回结构化结果。"""
         if params.name != "ask_user":
             return types.CallToolResult(
                 content=[types.TextContent(text=f"unsupported tool: {params.name}")],
                 isError=True,
             )
         arguments = params.arguments or {}
-        options = arguments.get("options") or []
-        recommended = arguments.get("recommended")
-        if not isinstance(recommended, int) or recommended not in range(len(options)):
-            # 推荐项必须指向实际提供的选项之一。
+        questions = arguments.get("questions") or []
+        if not questions:
             return types.CallToolResult(
-                content=[types.TextContent(text="recommended must identify one supplied option")],
+                content=[types.TextContent(text="questions must not be empty")],
                 isError=True,
             )
         result = await broker_call(arguments)

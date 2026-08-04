@@ -39,7 +39,7 @@ def test_invalid_transition(tmp_path: Path) -> None:
     store = Store(tmp_path / "db.sqlite3")
     todo = store.create_todo("x")
     with pytest.raises(InvalidTransition):
-        store.transition(todo.id, TodoState.COMPLETED, todo.version)
+        store.transition(todo.id, TodoState.ERROR, todo.version)
 
 
 def test_tool_call_idempotency(tmp_path: Path) -> None:

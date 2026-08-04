@@ -25,10 +25,10 @@ SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-INSERT OR IGNORE INTO meta VALUES ('schema_version', '2');
+INSERT OR IGNORE INTO meta VALUES ('schema_version', '3');
 CREATE TABLE IF NOT EXISTS todos (
  id TEXT PRIMARY KEY, body TEXT NOT NULL, state TEXT NOT NULL, sort_key INTEGER NOT NULL,
- version INTEGER NOT NULL DEFAULT 0, latest_detail TEXT, workspace TEXT,
+ version INTEGER NOT NULL DEFAULT 0, latest_detail TEXT, workspace TEXT, pending_action TEXT,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived_at TEXT
 );
 CREATE TABLE IF NOT EXISTS todo_additions (
@@ -44,8 +44,7 @@ CREATE TABLE IF NOT EXISTS transitions (
  to_state TEXT NOT NULL, detail TEXT, created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS workspaces (
- todo_id TEXT PRIMARY KEY REFERENCES todos(id), path TEXT NOT NULL, project_root TEXT,
- branch TEXT, is_worktree INTEGER NOT NULL, dirty_policy TEXT, created_at TEXT NOT NULL
+ todo_id TEXT PRIMARY KEY REFERENCES todos(id), path TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS codex_runs (
  run_id TEXT PRIMARY KEY, todo_id TEXT NOT NULL REFERENCES todos(id), thread_id TEXT,
@@ -125,6 +124,9 @@ class Store:
     @staticmethod
     def _migrate(db: sqlite3.Connection) -> None:
         """补齐 codex_runs 新列，并把旧版 todo_additions 合并进 todo_notes。"""
+        todos_columns = {row[1] for row in db.execute("PRAGMA table_info(todos)")}
+        if "pending_action" not in todos_columns:
+            db.execute("ALTER TABLE todos ADD COLUMN pending_action TEXT")
         columns = {row[1] for row in db.execute("PRAGMA table_info(codex_runs)")}
         for name, declaration in (
             ("final_message", "TEXT"),
@@ -133,7 +135,7 @@ class Store:
         ):
             if name not in columns:
                 db.execute(f"ALTER TABLE codex_runs ADD COLUMN {name} {declaration}")
-        db.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
+        db.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
         # 老版本待办追加表统一迁移到 todo_notes，迁移过程保持幂等。
         db.execute(
             "INSERT INTO todo_notes(todo_id,kind,body,created_at,delivered_at,ack_id) "
@@ -176,7 +178,7 @@ class Store:
         """把数据库行转换为 Todo 数据对象。"""
         return Todo(
             row["id"], row["body"], TodoState(row["state"]), row["sort_key"],
-            row["version"], row["latest_detail"], row["workspace"],
+            row["version"], row["latest_detail"], row["workspace"], row["pending_action"],
             _date(row["created_at"]), _date(row["updated_at"]),
         )
 
@@ -245,11 +247,12 @@ class Store:
         target: TodoState,
         expected_version: int,
         detail: str | None = None,
+        pending_action: str | None = None,
     ) -> Todo:
         """在版本一致的乐观锁条件下转换待办状态。"""
         now = _now()
         with self.transaction() as db:
-            self._transition(db, todo_id, target, expected_version, detail, now)
+            self._transition(db, todo_id, target, expected_version, detail, now, pending_action)
         return self.get_todo(todo_id)
 
     def _transition(
@@ -260,6 +263,7 @@ class Store:
         expected_version: int,
         detail: str | None,
         now: str,
+        pending_action: str | None = None,
     ) -> None:
         """事务内执行状态转换，包括自动槽校验和转换历史写入。"""
         row = db.execute("SELECT state,version FROM todos WHERE id=?", (todo_id,)).fetchone()
@@ -275,10 +279,11 @@ class Store:
             if lease is not None and lease["todo_id"] != todo_id:
                 raise ConflictError(f"automatic slot held by {lease['todo_id']}")
         archived = now if target is TodoState.ARCHIVED else None
+        next_pending = pending_action if target is TodoState.STOPPING else None
         changed = db.execute(
-            "UPDATE todos SET state=?,latest_detail=COALESCE(?,latest_detail),version=version+1,"
+            "UPDATE todos SET state=?,pending_action=?,latest_detail=COALESCE(?,latest_detail),version=version+1,"
             "updated_at=?,archived_at=COALESCE(?,archived_at) WHERE id=? AND version=?",
-            (target, detail, now, archived, todo_id, expected_version),
+            (target, next_pending, detail, now, archived, todo_id, expected_version),
         )
         if changed.rowcount != 1:
             raise ConflictError(todo_id)
@@ -294,6 +299,23 @@ class Store:
         if target not in AUTO_SLOT_STATES:
             # 离开自动槽后必须释放全局 lease，让其他待办可以接手。
             db.execute("DELETE FROM auto_lease WHERE todo_id=?", (todo_id,))
+
+    def set_pending_action(self, todo_id: str, action: str, expected_version: int) -> Todo:
+        """更新正在停止的待办的停止后目标状态。"""
+        now = _now()
+        with self.transaction() as db:
+            row = db.execute("SELECT version FROM todos WHERE id=?", (todo_id,)).fetchone()
+            if row is None:
+                raise KeyError(todo_id)
+            if row["version"] != expected_version:
+                raise ConflictError(f"todo {todo_id} version is {row['version']}, expected {expected_version}")
+            changed = db.execute(
+                "UPDATE todos SET pending_action=?,version=version+1,updated_at=? WHERE id=? AND version=?",
+                (action, now, todo_id, expected_version),
+            )
+            if changed.rowcount != 1:
+                raise ConflictError(todo_id)
+        return self.get_todo(todo_id)
 
     def acquire_auto_lease(self, todo_id: str, run_id: str) -> None:
         """原子占用全局自动任务槽，已占用时抛出 ConflictError。"""
@@ -460,14 +482,23 @@ class Store:
                 (_now(), ack_id, *note_ids),
             )
 
-    def record_workspace(self, todo_id: str, path: Path, project_root: Path | None, branch: str | None, is_worktree: bool, dirty_policy: str | None) -> None:
-        """保存或更新待办工作区信息。"""
+    def record_workspace(self, todo_id: str, path: Path) -> None:
+        """保存或更新待办工作区路径；旧库的 Git 字段保留但不再维护。"""
+        now = _now()
         with self.transaction() as db:
-            db.execute(
-                "INSERT INTO workspaces(todo_id,path,project_root,branch,is_worktree,dirty_policy,created_at) VALUES(?,?,?,?,?,?,?) "
-                "ON CONFLICT(todo_id) DO UPDATE SET path=excluded.path,project_root=excluded.project_root,branch=excluded.branch,is_worktree=excluded.is_worktree,dirty_policy=excluded.dirty_policy",
-                (todo_id, str(path), str(project_root) if project_root else None, branch, int(is_worktree), dirty_policy, _now()),
-            )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(workspaces)")}
+            if "is_worktree" in columns:
+                db.execute(
+                    "INSERT INTO workspaces(todo_id,path,project_root,branch,is_worktree,dirty_policy,created_at) VALUES(?,?,NULL,NULL,0,NULL,?) "
+                    "ON CONFLICT(todo_id) DO UPDATE SET path=excluded.path,project_root=NULL,branch=NULL,is_worktree=0,dirty_policy=NULL",
+                    (todo_id, str(path), now),
+                )
+            else:
+                db.execute(
+                    "INSERT INTO workspaces(todo_id,path,created_at) VALUES(?,?,?) "
+                    "ON CONFLICT(todo_id) DO UPDATE SET path=excluded.path",
+                    (todo_id, str(path), now),
+                )
 
     def record_codex_event(self, run_id: str, method: str, raw: Any, detail: str | None = None) -> int:
         """记录完整 Codex 事件，并可选更新待办的最近进度。"""

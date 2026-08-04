@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
+import shlex
 import shutil
 import socket
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,8 +21,7 @@ from .ipc import safe_unix_socket_path
 from .jsonrpc import JsonRpcConnection, JsonRpcWebSocket
 from .workspace import validate_cwd
 
-DEVELOPER_INSTRUCTIONS = """You are operating one RelayNote todo. Work only in the provided absolute workspace. Preserve all existing user changes. Ask blocking questions exclusively through the relaynote_ask.ask_user MCP tool, one question per call, with one recommended option. Never invoke a built-in question tool. Treat appended instructions as part of this todo. Send concise commentary while working and finish with a complete outcome report."""
-SAFE_MCP_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+DEVELOPER_INSTRUCTIONS = """You are operating one RelayNote todo. Work only in the provided absolute workspace. Preserve all existing user changes. Ask blocking questions exclusively through the relaynote_ask.ask_user MCP tool; one call may contain multiple questions, and each question's first option is the recommended option. Never invoke a built-in question tool. Treat appended instructions as part of this todo. Send concise commentary while working and finish with a complete outcome report."""
 
 
 class CodexVersionError(RuntimeError):
@@ -224,21 +224,27 @@ async def codex_version(path: Path) -> str:
     return stdout.decode().strip()
 
 
-async def _configured_mcp_names(codex: Path, env: dict[str, str]) -> list[str]:
-    """查询 Codex 已配置的 MCP server 名称，稍后统一禁用。"""
-    process = await asyncio.create_subprocess_exec(
-        str(codex), "mcp", "list", "--json",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
-    )
-    stdout, _ = await process.communicate()
-    if process.returncode:
-        return []
-    try:
-        raw = json.loads(stdout)
-    except json.JSONDecodeError:
-        return []
-    entries = raw if isinstance(raw, list) else raw.get("mcp_servers", raw.get("servers", []))
-    return [item.get("name") for item in entries if isinstance(item, dict) and SAFE_MCP_NAME.fullmatch(item.get("name", ""))]
+def login_shell(settings: Settings) -> Path:
+    """返回用于加载用户全局环境的登录 shell。"""
+    if settings.shell_path is not None:
+        return settings.shell_path
+    configured = os.environ.get("SHELL")
+    if configured:
+        return Path(configured)
+    return Path("/bin/zsh" if sys.platform == "darwin" else "/bin/bash")
+
+
+def ask_mcp_command() -> tuple[str, list[str]]:
+    """返回项目自带 Ask MCP 的命令和参数，绝不使用外部配置。"""
+    executable_dir = Path(sys.executable).resolve().parent
+    for candidate in ("ask_mcp", "ask_mcp.py"):
+        path = executable_dir / candidate
+        if path.is_file():
+            return str(path), []
+    script = shutil.which("relaynote-ask")
+    if script:
+        return script, []
+    return str(Path(sys.executable).resolve()), ["-m", "relaynote.ask_mcp"]
 
 
 def _loopback_port() -> int:
@@ -278,30 +284,13 @@ async def spawn_app_server(
     actual_version = await codex_version(Path(executable))
     if actual_version != settings.expected_codex_version:
         raise CodexVersionError(f"Codex version is {actual_version}; RelayNote requires {settings.expected_codex_version}")
-    ask_command = settings.ask_command or Path(shutil.which("relaynote-ask") or "")
-    if not ask_command.is_file():
-        raise FileNotFoundError("relaynote-ask executable not found")
-
-    env = os.environ.copy()
-    env.update(settings.network_env())
-    # 待办和 run 标识通过环境变量传入 Ask MCP，socket 只允许本机连接。
-    env.update(
-        {
-            "RELAYNOTE_TODO_ID": todo_id,
-            "RELAYNOTE_RUN_ID": run_id,
-            "RELAYNOTE_ASK_SOCKET": str(settings.ask_socket),
-            "RELAYNOTE_ASK_TOKEN": ask_token,
-        }
-    )
-    disabled = await _configured_mcp_names(Path(executable), env)
+    ask_command, ask_args = ask_mcp_command()
     common = [
         executable,
         "app-server",
         "--disable", "apps",
-        "--disable", "plugins",
-        "-c", 'sandbox_mode="danger-full-access"',
-        "-c", 'approval_policy="never"',
         "-c", f"mcp_servers.relaynote_ask.command={json.dumps(str(ask_command))}",
+        "-c", f"mcp_servers.relaynote_ask.args={json.dumps(ask_args)}",
         "-c", 'mcp_servers.relaynote_ask.enabled=true',
         "-c", 'mcp_servers.relaynote_ask.required=true',
         "-c", 'mcp_servers.relaynote_ask.enabled_tools=["ask_user"]',
@@ -309,9 +298,6 @@ async def spawn_app_server(
         "-c", "mcp_servers.relaynote_ask.startup_timeout_sec=30",
         "-c", "mcp_servers.relaynote_ask.tool_timeout_sec=86400",
     ]
-    for name in disabled:
-        if name != "relaynote_ask":
-            common.extend(("-c", f"mcp_servers.{name}.enabled=false"))
 
     socket_path: Path | None
     if prefer_unix:
@@ -326,9 +312,17 @@ async def spawn_app_server(
         # loopback WebSocket 作为兼容备选，端口随机选择。
         socket_path = None
         endpoint = f"ws://127.0.0.1:{_loopback_port()}"
+    shell = login_shell(settings)
+    relaynote_env = {
+        "RELAYNOTE_TODO_ID": todo_id,
+        "RELAYNOTE_RUN_ID": run_id,
+        "RELAYNOTE_ASK_SOCKET": str(settings.ask_socket),
+        "RELAYNOTE_ASK_TOKEN": ask_token,
+    }
+    exports = " ".join(f"export {name}={shlex.quote(value)};" for name, value in relaynote_env.items())
+    command = exports + " exec " + shlex.join(common) + " --listen " + shlex.quote(endpoint)
     process = await asyncio.create_subprocess_exec(
-        *common, "--listen", endpoint,
-        env=env,
+        str(shell), "-lc", command, cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

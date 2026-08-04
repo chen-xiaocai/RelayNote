@@ -146,7 +146,7 @@ def run_app(settings: Settings) -> None:
             self.root_view.addSubview_(self._label("RelayNote", Foundation.NSMakeRect(18, 520, 280, 28), 20, True))
             diagnostics = []
             if not self.settings.deepseek_api_key:
-                diagnostics.append("未设置 DEEPSEEK_API_KEY，自动调度已停用")
+                diagnostics.append("未在 ~/.relaynote/config.toml 设置 API key，自动调度已停用")
             if diagnostics:
                 warning = self._label("\n".join(diagnostics), Foundation.NSMakeRect(18, 488, 394, 28), 11)
                 warning.setTextColor_(AppKit.NSColor.systemOrangeColor())
@@ -312,10 +312,13 @@ def run_app(settings: Settings) -> None:
             if todo.state is TodoState.COMPLETED:
                 self.root_view.addSubview_(self._button("退回待完成", "resetTodo:", Foundation.NSMakeRect(x, 62, 112, 34)))
                 x += 122
-                self.root_view.addSubview_(self._button("✓ 验收", "archiveTodo:", Foundation.NSMakeRect(x, 62, 82, 34)))
-            elif todo.state is TodoState.TAKEN_OVER:
-                self.root_view.addSubview_(self._button("✓ 完成并移除", "completeClaimed:", Foundation.NSMakeRect(x, 62, 128, 34)))
-            elif todo.state is TodoState.ERROR:
+            if todo.state not in {TodoState.COMPLETED, TodoState.ARCHIVED}:
+                self.root_view.addSubview_(self._button("✓ 完成", "completeTodo:", Foundation.NSMakeRect(x, 62, 82, 34)))
+                x += 92
+            if todo.state is not TodoState.ARCHIVED:
+                self.root_view.addSubview_(self._button("归档", "archiveTodo:", Foundation.NSMakeRect(x, 62, 82, 34)))
+                x += 92
+            if todo.state is TodoState.ERROR:
                 self.root_view.addSubview_(self._button("重试", "retryTodo:", Foundation.NSMakeRect(x, 62, 82, 34)))
 
         def backToList_(self, sender: Any) -> None:
@@ -344,16 +347,12 @@ def run_app(settings: Settings) -> None:
             self.runtime.reset_completed(self.selected_id)
 
         def archiveTodo_(self, sender: Any) -> None:
-            """归档已完成待办并返回列表。"""
-            self.runtime.archive(self.selected_id)
-            self.backToList_(sender)
+            """归档当前详情中的待办；运行中的会先停止。"""
+            self._submit(self.runtime.archive(self.selected_id))
 
-        def completeClaimed_(self, sender: Any) -> None:
-            """完成已接管待办并立即归档。"""
-            todo = self.runtime.store.get_todo(self.selected_id)
-            completed = self.runtime.store.transition(todo.id, TodoState.COMPLETED, todo.version)
-            self.runtime.archive(completed.id)
-            self.backToList_(sender)
+        def completeTodo_(self, sender: Any) -> None:
+            """把当前详情中的待办切换为已完成；运行中的会先停止。"""
+            self._submit(self.runtime.complete(self.selected_id))
 
         def retryTodo_(self, sender: Any) -> None:
             """重试异常状态的待办。"""
@@ -402,7 +401,10 @@ def run_app(settings: Settings) -> None:
             y = 176
             for index, option in enumerate(question.options):
                 suffix = "（推荐）" if index == question.recommended else ""
-                button = self._button(f"{option.label}{suffix} — {option.description}", "answerOption:", Foundation.NSMakeRect(20, y, 390, 32))
+                title = f"{option.label}{suffix}"
+                if option.description:
+                    title += f" — {option.description}"
+                button = self._button(title, "answerOption:", Foundation.NSMakeRect(20, y, 390, 32))
                 button.setTag_(index)
                 content.addSubview_(button)
                 y -= 38
